@@ -1,6 +1,6 @@
 # Dev logs
 .dev-changes.jsonl
-
+CHANGELOG.md
 # Secrets
 .env
 .env.local
@@ -18,3 +18,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+#Instructions
+CLAUDE.md
