@@ -1,0 +1,17 @@
+-- 005_drop_old_tables.sql: Remove old tables replaced by CoW system.
+--
+-- WARNING: Only run this AFTER 004_data_migration.py has been verified.
+-- This is DESTRUCTIVE — the old tables will be permanently removed.
+--
+-- Tables dropped:
+--   characters          -> replaced by character_ledger + character_state_entries + story_cards
+--   relationships       -> replaced by trust_baselines + trust_modifications (with new columns)
+--   character_state_history -> no longer needed (CoW = append-only, no rewind via revert)
+--   scene_context_history   -> same as above
+--   scene_context       -> replaced by scene_state_entries
+
+DROP TABLE IF EXISTS character_state_history;
+DROP TABLE IF EXISTS scene_context_history;
+DROP TABLE IF EXISTS characters;
+DROP TABLE IF EXISTS relationships;
+DROP TABLE IF EXISTS scene_context;
