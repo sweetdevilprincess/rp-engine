@@ -26,6 +26,7 @@ from rp_engine.services.context_engine import trust_stage
 from rp_engine.services.graph_resolver import GraphResolver
 from rp_engine.services.llm_client import LLMClient
 from rp_engine.services.vector_search import VectorSearch
+from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ class NPCEngine:
         self,
         npc_name: str,
         scene_prompt: str,
-        pov_character: str = "Lilith",
+        pov_character: str,
         rp_folder: str = "",
         branch: str = "main",
         model_override: str | None = None,
@@ -156,63 +157,47 @@ class NPCEngine:
         card_name = card_row["name"]
 
         # Parse frontmatter for archetype/modifiers if character row doesn't have them
-        card_fm = {}
-        if card_row.get("frontmatter"):
-            try:
-                card_fm = json.loads(card_row["frontmatter"]) if isinstance(card_row["frontmatter"], str) else card_row["frontmatter"]
-            except (json.JSONDecodeError, TypeError):
-                card_fm = {}
+        card_fm = safe_parse_json(card_row.get("frontmatter"))
 
-        # 2. Load character state
-        char_row = await self.db.fetch_one(
-            """SELECT primary_archetype, secondary_archetype, behavioral_modifiers,
-                      emotional_state, conditions, importance
-               FROM characters WHERE rp_folder = ? AND branch = ? AND LOWER(name) = LOWER(?)""",
-            [rp_folder, branch, npc_name],
-        )
+        # 2. Load character data from card frontmatter + runtime state
+        archetype = card_fm.get("primary_archetype")
+        modifiers_raw = card_fm.get("behavioral_modifiers", [])
+        modifiers = safe_parse_json_list(modifiers_raw)
 
-        archetype = (char_row["primary_archetype"] if char_row else None) or card_fm.get("primary_archetype")
-        modifiers_raw = (char_row["behavioral_modifiers"] if char_row else None) or card_fm.get("behavioral_modifiers", [])
-        modifiers: list[str] = []
-        if modifiers_raw:
-            if isinstance(modifiers_raw, str):
-                try:
-                    modifiers = json.loads(modifiers_raw)
-                except (json.JSONDecodeError, TypeError):
-                    modifiers = [modifiers_raw]
-            elif isinstance(modifiers_raw, list):
-                modifiers = modifiers_raw
-
-        # 3. Load trust data
+        # 3. Load trust data from trust_baselines + trust_modifications
         trust_score = 0
         trust_stage_name = "neutral"
         dynamic = None
-        session_gained = 0
-        session_lost = 0
         trust_history: list[dict] = []
 
-        rel_row = await self.db.fetch_one(
-            """SELECT id, initial_trust_score + trust_modification_sum as score,
-                      trust_stage, dynamic, session_trust_gained, session_trust_lost
-               FROM relationships
+        baseline_row = await self.db.fetch_one(
+            """SELECT baseline_score FROM trust_baselines
                WHERE rp_folder = ? AND branch = ?
                  AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
                    OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
             [rp_folder, branch, npc_name, pov_character, pov_character, npc_name],
         )
-        if rel_row:
-            trust_score = rel_row["score"] or 0
-            trust_stage_name = trust_stage(trust_score)
-            dynamic = rel_row.get("dynamic")
-            session_gained = rel_row.get("session_trust_gained") or 0
-            session_lost = rel_row.get("session_trust_lost") or 0
+        baseline = baseline_row["baseline_score"] if baseline_row else 0
+        mod_sum = await self.db.fetch_val(
+            """SELECT COALESCE(SUM(change), 0) FROM trust_modifications
+               WHERE rp_folder = ? AND branch = ?
+                 AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
+                   OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
+            [rp_folder, branch, npc_name, pov_character, pov_character, npc_name],
+        )
+        trust_score = baseline + (mod_sum or 0)
+        trust_stage_name = trust_stage(trust_score)
 
-            # Load recent trust history
-            history_rows = await self.db.fetch_all(
-                "SELECT date, change, direction, reason FROM trust_modifications WHERE relationship_id = ? ORDER BY created_at DESC LIMIT 5",
-                [rel_row["id"]],
-            )
-            trust_history = [dict(r) for r in history_rows]
+        # Load recent trust history
+        history_rows = await self.db.fetch_all(
+            """SELECT date, change, direction, reason FROM trust_modifications
+               WHERE rp_folder = ? AND branch = ?
+                 AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
+                   OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))
+               ORDER BY created_at DESC LIMIT 5""",
+            [rp_folder, branch, npc_name, pov_character, pov_character, npc_name],
+        )
+        trust_history = [dict(r) for r in history_rows]
 
         # 4. Detect intimate context
         intimate = self._detect_intimate(scene_prompt)
@@ -308,7 +293,7 @@ class NPCEngine:
         self,
         npc_names: list[str],
         scene_prompt: str,
-        pov_character: str = "Lilith",
+        pov_character: str,
         rp_folder: str = "",
         branch: str = "main",
     ) -> list[NPCReaction]:
@@ -329,7 +314,7 @@ class NPCEngine:
 
         # Filter out exceptions, log them
         reactions: list[NPCReaction] = []
-        for name, result in zip(npc_names, results):
+        for name, result in zip(npc_names, results, strict=True):
             if isinstance(result, Exception):
                 logger.error("NPC reaction failed for %s: %s", name, result)
             else:
@@ -344,7 +329,7 @@ class NPCEngine:
     async def get_trust(
         self,
         npc_name: str,
-        target: str = "Lilith",
+        target: str,
         rp_folder: str = "",
         branch: str = "main",
     ) -> TrustInfo:
@@ -397,63 +382,87 @@ class NPCEngine:
         self,
         rp_folder: str,
         branch: str = "main",
-        pov_character: str = "Lilith",
+        pov_character: str = "",
     ) -> list[NPCListItem]:
         """List all NPCs in an RP with their state."""
         # Get all NPC/character cards
         card_rows = await self.db.fetch_all(
-            "SELECT name, card_type, importance, frontmatter FROM story_cards WHERE rp_folder = ? AND card_type IN ('npc', 'character')",
+            "SELECT id, name, card_type, importance, frontmatter FROM story_cards WHERE rp_folder = ? AND card_type IN ('npc', 'character')",
             [rp_folder],
         )
 
+        # Batch-fetch runtime state for all cards in this rp_folder/branch
+        card_ids = [card["id"] for card in card_rows if card.get("id")]
+        runtime_map: dict[str, dict] = {}  # card_id -> latest state row
+        if card_ids:
+            # Use subquery to get latest exchange_number per card_id
+            runtime_rows = await self.db.fetch_all(
+                """SELECT cse.card_id, cse.location, cse.emotional_state
+                   FROM character_state_entries cse
+                   INNER JOIN (
+                       SELECT card_id, MAX(exchange_number) as max_ex
+                       FROM character_state_entries
+                       WHERE rp_folder = ? AND branch = ?
+                       GROUP BY card_id
+                   ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
+                   WHERE cse.rp_folder = ? AND cse.branch = ?""",
+                [rp_folder, branch, rp_folder, branch],
+            )
+            for row in runtime_rows:
+                runtime_map[row["card_id"]] = row
+
+        # Batch-fetch trust baselines and modification sums
+        pov_lower = pov_character.lower()
+        baseline_rows = await self.db.fetch_all(
+            """SELECT LOWER(character_a) as ca, LOWER(character_b) as cb, baseline_score
+               FROM trust_baselines WHERE rp_folder = ? AND branch = ?""",
+            [rp_folder, branch],
+        )
+        baseline_map: dict[str, int] = {}  # lowercase npc name -> baseline
+        for row in baseline_rows:
+            ca, cb = row["ca"], row["cb"]
+            if ca == pov_lower:
+                baseline_map[cb] = row["baseline_score"]
+            elif cb == pov_lower:
+                baseline_map[ca] = row["baseline_score"]
+
+        mod_rows = await self.db.fetch_all(
+            """SELECT LOWER(character_a) as ca, LOWER(character_b) as cb,
+                      COALESCE(SUM(change), 0) as total
+               FROM trust_modifications WHERE rp_folder = ? AND branch = ?
+               GROUP BY LOWER(character_a), LOWER(character_b)""",
+            [rp_folder, branch],
+        )
+        mod_map: dict[str, int] = {}  # lowercase npc name -> mod sum
+        for row in mod_rows:
+            ca, cb = row["ca"], row["cb"]
+            if ca == pov_lower:
+                mod_map[cb] = mod_map.get(cb, 0) + row["total"]
+            elif cb == pov_lower:
+                mod_map[ca] = mod_map.get(ca, 0) + row["total"]
+
         results: list[NPCListItem] = []
         for card in card_rows:
-            fm = {}
-            if card.get("frontmatter"):
-                try:
-                    fm = json.loads(card["frontmatter"]) if isinstance(card["frontmatter"], str) else card["frontmatter"]
-                except (json.JSONDecodeError, TypeError):
-                    fm = {}
+            fm = safe_parse_json(card.get("frontmatter"))
 
             # Skip player characters
             if fm.get("is_player_character"):
                 continue
 
             name = card["name"]
+            name_lower = name.lower()
 
-            # Load character state
-            char_row = await self.db.fetch_one(
-                """SELECT primary_archetype, secondary_archetype, behavioral_modifiers,
-                          emotional_state, location
-                   FROM characters WHERE rp_folder = ? AND branch = ? AND LOWER(name) = LOWER(?)""",
-                [rp_folder, branch, name],
-            )
+            # Load character data from frontmatter
+            archetype = fm.get("primary_archetype")
+            secondary = fm.get("secondary_archetype")
+            modifiers_raw = fm.get("behavioral_modifiers", [])
+            modifiers = safe_parse_json_list(modifiers_raw)
 
-            archetype = (char_row["primary_archetype"] if char_row else None) or fm.get("primary_archetype")
-            secondary = (char_row["secondary_archetype"] if char_row else None) or fm.get("secondary_archetype")
-            modifiers_raw = (char_row["behavioral_modifiers"] if char_row else None) or fm.get("behavioral_modifiers", [])
-            modifiers: list[str] = []
-            if modifiers_raw:
-                if isinstance(modifiers_raw, str):
-                    try:
-                        modifiers = json.loads(modifiers_raw)
-                    except (json.JSONDecodeError, TypeError):
-                        modifiers = [modifiers_raw]
-                elif isinstance(modifiers_raw, list):
-                    modifiers = modifiers_raw
+            # Runtime state from batch-fetched map
+            runtime = runtime_map.get(card.get("id"))
 
-            # Load trust score
-            trust_score = 0
-            rel_row = await self.db.fetch_one(
-                """SELECT initial_trust_score + trust_modification_sum as score
-                   FROM relationships
-                   WHERE rp_folder = ? AND branch = ?
-                     AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                       OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-                [rp_folder, branch, name, pov_character, pov_character, name],
-            )
-            if rel_row:
-                trust_score = rel_row["score"] or 0
+            # Trust score from batch-fetched maps
+            trust_score = baseline_map.get(name_lower, 0) + mod_map.get(name_lower, 0)
 
             results.append(NPCListItem(
                 name=name,
@@ -463,8 +472,8 @@ class NPCEngine:
                 behavioral_modifiers=modifiers if isinstance(modifiers, list) else [],
                 trust_score=trust_score,
                 trust_stage=trust_stage(trust_score),
-                location=char_row["location"] if char_row else None,
-                emotional_state=char_row["emotional_state"] if char_row else None,
+                location=runtime["location"] if runtime else None,
+                emotional_state=runtime["emotional_state"] if runtime else None,
             ))
 
         return results
@@ -682,12 +691,9 @@ class NPCEngine:
         total_chars = 0
 
         for row in rows:
-            fm = {}
-            if row.get("frontmatter"):
-                try:
-                    fm = json.loads(row["frontmatter"]) if isinstance(row["frontmatter"], str) else row["frontmatter"]
-                except (json.JSONDecodeError, TypeError):
-                    continue
+            fm = safe_parse_json(row.get("frontmatter"))
+            if not fm:
+                continue
 
             known_by = fm.get("known_by", [])
             if isinstance(known_by, str):

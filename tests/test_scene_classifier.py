@@ -102,10 +102,20 @@ class TestTextScoring:
 class TestStateBoosts:
     @pytest.mark.asyncio
     async def test_condition_boost(self, db, classifier):
-        # Insert a character with "injured" condition
+        # Insert a character with "injured" condition via CoW tables
+        card_id = "TestRP:lilith"
         future = await db.enqueue_write(
-            "INSERT INTO characters (id, rp_folder, branch, name, conditions) VALUES (?, ?, ?, ?, ?)",
-            ["test:lilith", "TestRP", "main", "Lilith", json.dumps(["injured"])],
+            """INSERT OR REPLACE INTO story_cards
+                   (id, rp_folder, file_path, card_type, name, frontmatter, indexed_at)
+               VALUES (?, ?, ?, 'character', ?, '{}', '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "Story Cards/Characters/Lilith.md", "Lilith"],
+        )
+        await future
+        future = await db.enqueue_write(
+            """INSERT OR REPLACE INTO character_state_entries
+                   (card_id, rp_folder, branch, exchange_number, conditions, created_at)
+               VALUES (?, ?, ?, 0, ?, '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "main", json.dumps(["injured"])],
         )
         await future
 
@@ -120,9 +130,11 @@ class TestStateBoosts:
 
     @pytest.mark.asyncio
     async def test_mood_boost(self, db, classifier):
-        # Insert scene with romantic mood
+        # Insert scene with romantic mood via CoW table
         future = await db.enqueue_write(
-            "INSERT INTO scene_context (rp_folder, branch, mood) VALUES (?, ?, ?)",
+            """INSERT INTO scene_state_entries
+                   (rp_folder, branch, exchange_number, mood, created_at)
+               VALUES (?, ?, 0, ?, '2026-01-01T00:00:00')""",
             ["TestRP", "main", "romantic"],
         )
         await future
@@ -136,9 +148,19 @@ class TestStateBoosts:
 
     @pytest.mark.asyncio
     async def test_emotional_state_boost(self, db, classifier):
+        card_id = "TestRP:lilith"
         future = await db.enqueue_write(
-            "INSERT INTO characters (id, rp_folder, branch, name, emotional_state) VALUES (?, ?, ?, ?, ?)",
-            ["test:lilith", "TestRP", "main", "Lilith", "grief"],
+            """INSERT OR REPLACE INTO story_cards
+                   (id, rp_folder, file_path, card_type, name, frontmatter, indexed_at)
+               VALUES (?, ?, ?, 'character', ?, '{}', '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "Story Cards/Characters/Lilith.md", "Lilith"],
+        )
+        await future
+        future = await db.enqueue_write(
+            """INSERT OR REPLACE INTO character_state_entries
+                   (card_id, rp_folder, branch, exchange_number, emotional_state, created_at)
+               VALUES (?, ?, ?, 0, ?, '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "main", "grief"],
         )
         await future
 

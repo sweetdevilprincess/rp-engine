@@ -50,10 +50,10 @@ async def create_branch(
     except ValueError as e:
         msg = str(e)
         if "already exists" in msg:
-            raise HTTPException(409, detail=msg)
+            raise HTTPException(409, detail=msg) from None
         if "not found" in msg:
-            raise HTTPException(404, detail=msg)
-        raise HTTPException(400, detail=msg)
+            raise HTTPException(404, detail=msg) from None
+        raise HTTPException(400, detail=msg) from None
 
 
 @router.put("/active", response_model=BranchSwitchResponse)
@@ -70,7 +70,7 @@ async def switch_branch(
             previous_branch=previous,
         )
     except ValueError as e:
-        raise HTTPException(404, detail=str(e))
+        raise HTTPException(404, detail=str(e)) from None
 
 
 @router.get("/{name}", response_model=BranchInfo)
@@ -83,7 +83,7 @@ async def get_branch(
     try:
         return await branch_manager.get_branch(name, rp_folder)
     except ValueError as e:
-        raise HTTPException(404, detail=str(e))
+        raise HTTPException(404, detail=str(e)) from None
 
 
 @router.post("/{name}/checkpoint", response_model=CheckpointInfo, status_code=201)
@@ -104,8 +104,8 @@ async def create_checkpoint(
     except ValueError as e:
         msg = str(e)
         if "already exists" in msg:
-            raise HTTPException(409, detail=msg)
-        raise HTTPException(400, detail=msg)
+            raise HTTPException(409, detail=msg) from None
+        raise HTTPException(400, detail=msg) from None
 
 
 @router.get("/{name}/checkpoints", response_model=list[CheckpointInfo])
@@ -136,4 +136,4 @@ async def restore_checkpoint(
             branch=name,
         )
     except ValueError as e:
-        raise HTTPException(404, detail=str(e))
+        raise HTTPException(404, detail=str(e)) from None

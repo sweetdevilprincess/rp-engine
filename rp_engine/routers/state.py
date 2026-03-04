@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from rp_engine.dependencies import get_state_manager, get_timestamp_tracker
 from rp_engine.models.analysis import TimeAdvanceRequest, TimeAdvanceResponse
 from rp_engine.models.context import SceneState
-from rp_engine.services.timestamp_tracker import TimestampTracker
 from rp_engine.models.state import (
     CharacterDetail,
     CharacterListResponse,
@@ -24,6 +23,7 @@ from rp_engine.models.state import (
     StateSnapshot,
 )
 from rp_engine.services.state_manager import StateManager
+from rp_engine.services.timestamp_tracker import TimestampTracker
 
 logger = logging.getLogger(__name__)
 

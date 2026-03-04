@@ -165,10 +165,20 @@ class TestSignalCondition:
 class TestStateCondition:
     @pytest.mark.asyncio
     async def test_character_state(self, db, evaluator):
+        card_id = "TestRP:lilith"
+        # story_cards entry so trigger evaluator can find the card_id
         future = await db.enqueue_write(
-            """INSERT INTO characters (id, rp_folder, branch, name, emotional_state)
-               VALUES (?, ?, ?, ?, ?)""",
-            ["test:lilith", "TestRP", "main", "Lilith", "terrified"],
+            """INSERT OR REPLACE INTO story_cards
+                   (id, rp_folder, file_path, card_type, name, frontmatter, indexed_at)
+               VALUES (?, ?, ?, 'character', ?, '{}', '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "Story Cards/Characters/Lilith.md", "Lilith"],
+        )
+        await future
+        future = await db.enqueue_write(
+            """INSERT OR REPLACE INTO character_state_entries
+                   (card_id, rp_folder, branch, exchange_number, emotional_state, created_at)
+               VALUES (?, ?, ?, 0, ?, '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "main", "terrified"],
         )
         await future
 
@@ -180,11 +190,18 @@ class TestStateCondition:
     @pytest.mark.asyncio
     async def test_relationship_trust(self, db, evaluator):
         future = await db.enqueue_write(
-            """INSERT INTO relationships
-                   (rp_folder, branch, character_a, character_b,
-                    initial_trust_score, trust_modification_sum)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            ["TestRP", "main", "Lilith", "Dante", 16, 5],
+            """INSERT OR REPLACE INTO trust_baselines
+                   (character_a, character_b, rp_folder, branch, baseline_score, created_at)
+               VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00')""",
+            ["Lilith", "Dante", "TestRP", "main", 16],
+        )
+        await future
+        future = await db.enqueue_write(
+            """INSERT INTO trust_modifications
+                   (character_a, character_b, rp_folder, branch, exchange_number,
+                    change, direction, reason, date, created_at)
+               VALUES (?, ?, ?, ?, 0, ?, ?, ?, '', '2026-01-01T00:00:00')""",
+            ["Lilith", "Dante", "TestRP", "main", 5, "increase", "trust building"],
         )
         await future
 
@@ -196,7 +213,9 @@ class TestStateCondition:
     @pytest.mark.asyncio
     async def test_scene_state(self, db, evaluator):
         future = await db.enqueue_write(
-            "INSERT INTO scene_context (rp_folder, branch, mood) VALUES (?, ?, ?)",
+            """INSERT INTO scene_state_entries
+                   (rp_folder, branch, exchange_number, mood, created_at)
+               VALUES (?, ?, 0, ?, '2026-01-01T00:00:00')""",
             ["TestRP", "main", "tense"],
         )
         await future
@@ -216,10 +235,19 @@ class TestStateCondition:
 
     @pytest.mark.asyncio
     async def test_contains_operator(self, db, evaluator):
+        card_id = "TestRP:lilith"
         future = await db.enqueue_write(
-            """INSERT INTO characters (id, rp_folder, branch, name, conditions)
-               VALUES (?, ?, ?, ?, ?)""",
-            ["test:lilith", "TestRP", "main", "Lilith", json.dumps(["injured", "bleeding"])],
+            """INSERT OR REPLACE INTO story_cards
+                   (id, rp_folder, file_path, card_type, name, frontmatter, indexed_at)
+               VALUES (?, ?, ?, 'character', ?, '{}', '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "Story Cards/Characters/Lilith.md", "Lilith"],
+        )
+        await future
+        future = await db.enqueue_write(
+            """INSERT OR REPLACE INTO character_state_entries
+                   (card_id, rp_folder, branch, exchange_number, conditions, created_at)
+               VALUES (?, ?, ?, 0, ?, '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "main", json.dumps(["injured", "bleeding"])],
         )
         await future
 
@@ -230,10 +258,19 @@ class TestStateCondition:
 
     @pytest.mark.asyncio
     async def test_intersects_operator(self, db, evaluator):
+        card_id = "TestRP:lilith"
         future = await db.enqueue_write(
-            """INSERT INTO characters (id, rp_folder, branch, name, conditions)
-               VALUES (?, ?, ?, ?, ?)""",
-            ["test:lilith", "TestRP", "main", "Lilith", json.dumps(["injured", "armed"])],
+            """INSERT OR REPLACE INTO story_cards
+                   (id, rp_folder, file_path, card_type, name, frontmatter, indexed_at)
+               VALUES (?, ?, ?, 'character', ?, '{}', '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "Story Cards/Characters/Lilith.md", "Lilith"],
+        )
+        await future
+        future = await db.enqueue_write(
+            """INSERT OR REPLACE INTO character_state_entries
+                   (card_id, rp_folder, branch, exchange_number, conditions, created_at)
+               VALUES (?, ?, ?, 0, ?, '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "main", json.dumps(["injured", "armed"])],
         )
         await future
 

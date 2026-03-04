@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 
 from rp_engine.database import Database
 from rp_engine.dependencies import get_card_indexer, get_db, get_vault_root

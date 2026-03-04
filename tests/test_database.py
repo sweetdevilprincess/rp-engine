@@ -6,13 +6,11 @@ import pytest
 EXPECTED_TABLES = [
     "sessions",
     "exchanges",
-    "characters",
     "relationships",
     "trust_modifications",
     "plot_threads",
     "thread_counters",
     "events",
-    "scene_context",
     "story_cards",
     "entity_connections",
     "entity_aliases",
@@ -25,6 +23,11 @@ EXPECTED_TABLES = [
     "config",
     "context_sent",
     "situational_triggers",
+    # CoW tables (added in migration 003)
+    "character_ledger",
+    "character_state_entries",
+    "trust_baselines",
+    "scene_state_entries",
 ]
 
 

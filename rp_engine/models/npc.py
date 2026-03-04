@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from rp_engine.models.enums import Archetype, BehavioralModifier
+
 
 class TrustShift(BaseModel):
     direction: Literal["increase", "decrease", "neutral"]
@@ -25,14 +27,14 @@ class NPCReaction(BaseModel):
 class NPCReactRequest(BaseModel):
     npc_name: str
     scene_prompt: str
-    pov_character: str = "Lilith"
+    pov_character: str | None = None
     model_override: str | None = None
 
 
 class NPCBatchRequest(BaseModel):
     npc_names: list[str]
     scene_prompt: str
-    pov_character: str = "Lilith"
+    pov_character: str | None = None
 
 
 class TrustEvent(BaseModel):
@@ -55,9 +57,9 @@ class TrustInfo(BaseModel):
 class NPCListItem(BaseModel):
     name: str
     importance: str | None = None
-    primary_archetype: str | None = None
-    secondary_archetype: str | None = None
-    behavioral_modifiers: list[str] = []
+    primary_archetype: Archetype | None = None
+    secondary_archetype: Archetype | None = None
+    behavioral_modifiers: list[BehavioralModifier] = []
     trust_score: int = 0
     trust_stage: str = "neutral"
     location: str | None = None

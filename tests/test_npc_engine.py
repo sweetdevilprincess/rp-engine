@@ -30,14 +30,26 @@ async def _insert_character(
     archetype: str = "POWER_HOLDER",
     modifiers: list[str] | None = None,
 ):
-    """Insert a character row for testing."""
-    char_id = f"{rp_folder}:{branch}:{name.lower()}"
+    """Insert a character as story_card + ledger entry."""
+    card_id = f"{rp_folder}:{name.lower()}"
+    fm = json.dumps({
+        "primary_archetype": archetype,
+        "behavioral_modifiers": modifiers or [],
+        "is_player_character": False,
+    })
     future = await db.enqueue_write(
-        """INSERT OR REPLACE INTO characters
-           (id, rp_folder, branch, name, importance, primary_archetype, behavioral_modifiers, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        [char_id, rp_folder, branch, name, importance, archetype,
-         json.dumps(modifiers or []), datetime.now(timezone.utc).isoformat()],
+        """INSERT OR REPLACE INTO story_cards
+           (id, rp_folder, file_path, card_type, name, importance, content, frontmatter, indexed_at)
+           VALUES (?, ?, ?, 'character', ?, ?, ?, ?, '2026-01-01T00:00:00')""",
+        [card_id, rp_folder, f"Story Cards/Characters/{name}.md", name, importance,
+         f"{name} is a character in the story.", fm],
+    )
+    await future
+    future = await db.enqueue_write(
+        """INSERT OR IGNORE INTO character_ledger
+           (card_id, rp_folder, branch, status, activated_at_exchange, created_at)
+           VALUES (?, ?, ?, 'active', 0, '2026-01-01T00:00:00')""",
+        [card_id, rp_folder, branch],
     )
     await future
 
@@ -52,7 +64,25 @@ async def _insert_relationship(
     mod_sum: int = 0,
     dynamic: str = "cautious respect",
 ):
-    """Insert a relationship row for testing."""
+    """Insert trust baseline + optional modifications for testing."""
+    future = await db.enqueue_write(
+        """INSERT OR REPLACE INTO trust_baselines
+           (character_a, character_b, rp_folder, branch, baseline_score, created_at)
+           VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00')""",
+        [char_a, char_b, rp_folder, branch, initial_score],
+    )
+    await future
+    if mod_sum != 0:
+        future = await db.enqueue_write(
+            """INSERT INTO trust_modifications
+               (character_a, character_b, rp_folder, branch, exchange_number,
+                change, direction, reason, date, created_at)
+               VALUES (?, ?, ?, ?, 0, ?, ?, ?, '', '2026-01-01T00:00:00')""",
+            [char_a, char_b, rp_folder, branch, mod_sum,
+             "increase" if mod_sum > 0 else "decrease", dynamic],
+        )
+        await future
+    # Also insert into relationships table for get_trust (legacy path)
     future = await db.enqueue_write(
         """INSERT OR REPLACE INTO relationships
            (rp_folder, branch, character_a, character_b, initial_trust_score,

@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from rp_engine.models.npc import NPCReaction
 from rp_engine.models.rp import GuidelinesResponse
 
-
 # ---------------------------------------------------------------------------
 # API Request / Response
 # ---------------------------------------------------------------------------

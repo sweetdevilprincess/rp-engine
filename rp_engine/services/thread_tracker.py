@@ -7,13 +7,13 @@ counters cross configurable thresholds.
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rp_engine.database import PRIORITY_ANALYSIS, Database
 from rp_engine.models.analysis import ThreadDetail
 from rp_engine.models.context import ThreadAlert
+from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class ThreadTracker:
 
         counters = await self._load_counters(rp_folder, branch)
         text_lower = response_text.lower()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         alerts: list[ThreadAlert] = []
 
         for thread in threads:
@@ -106,11 +106,11 @@ class ThreadTracker:
                     thread_type=t.get("thread_type"),
                     priority=t.get("priority"),
                     status=t.get("status", "active"),
-                    keywords=self._parse_json_list(t.get("keywords")),
+                    keywords=safe_parse_json_list(t.get("keywords")),
                     current_counter=counters.get(thread_id, 0),
                     thresholds=self._parse_thresholds(t.get("thresholds")),
                     consequences=self._parse_consequences(t.get("consequences")),
-                    related_characters=self._parse_json_list(
+                    related_characters=safe_parse_json_list(
                         t.get("related_characters")
                     ),
                 )
@@ -141,11 +141,11 @@ class ThreadTracker:
             thread_type=row.get("thread_type"),
             priority=row.get("priority"),
             status=row.get("status", "active"),
-            keywords=self._parse_json_list(row.get("keywords")),
+            keywords=safe_parse_json_list(row.get("keywords")),
             current_counter=counter,
             thresholds=self._parse_thresholds(row.get("thresholds")),
             consequences=self._parse_consequences(row.get("consequences")),
-            related_characters=self._parse_json_list(row.get("related_characters")),
+            related_characters=safe_parse_json_list(row.get("related_characters")),
         )
 
     async def get_alerts(
@@ -201,37 +201,20 @@ class ThreadTracker:
     def _check_mention(thread: dict, text_lower: str) -> bool:
         """Check if any keyword, character, or location appears in text."""
         # Keywords
-        keywords = thread.get("keywords")
-        if isinstance(keywords, str):
-            try:
-                keywords = json.loads(keywords)
-            except (json.JSONDecodeError, TypeError):
-                keywords = []
-        keywords = keywords or []
-
-        for kw in keywords:
-            if str(kw).lower() in text_lower:
+        for kw in safe_parse_json_list(thread.get("keywords")):
+            if kw.lower() in text_lower:
                 return True
 
         # Related characters
-        chars = thread.get("related_characters")
-        if isinstance(chars, str):
-            try:
-                chars = json.loads(chars)
-            except (json.JSONDecodeError, TypeError):
-                chars = []
-        chars = chars or []
-
-        for char in chars:
-            if str(char).lower() in text_lower:
+        for char in safe_parse_json_list(thread.get("related_characters")):
+            if char.lower() in text_lower:
                 return True
 
-        return True if any(
-            str(loc).lower() in text_lower
-            for loc in ThreadTracker._parse_json_list_static(
-                thread.get("related_locations")
-            )
-        ) else False
+        # Related locations
+        return any(
+            loc.lower() in text_lower
+            for loc in safe_parse_json_list(thread.get("related_locations"))
+        )
 
     @staticmethod
     def _check_threshold(
@@ -276,45 +259,13 @@ class ThreadTracker:
     @staticmethod
     def _parse_thresholds(raw: str | dict | None) -> dict[str, int]:
         """Parse thresholds JSON or return defaults."""
-        if isinstance(raw, dict):
-            return {k: int(v) for k, v in raw.items() if k in ("gentle", "moderate", "strong")}
-        if isinstance(raw, str):
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    return {k: int(v) for k, v in parsed.items() if k in ("gentle", "moderate", "strong")}
-            except (json.JSONDecodeError, TypeError):
-                pass
+        parsed = safe_parse_json(raw)
+        if parsed:
+            return {k: int(v) for k, v in parsed.items() if k in ("gentle", "moderate", "strong")}
         return dict(DEFAULT_THRESHOLDS)
 
     @staticmethod
     def _parse_consequences(raw: str | dict | None) -> dict[str, str]:
         """Parse consequences JSON."""
-        if isinstance(raw, dict):
-            return {k: str(v) for k, v in raw.items()}
-        if isinstance(raw, str):
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    return {k: str(v) for k, v in parsed.items()}
-            except (json.JSONDecodeError, TypeError):
-                pass
-        return {}
-
-    @staticmethod
-    def _parse_json_list(raw: str | list | None) -> list[str]:
-        """Parse JSON list or return empty."""
-        return ThreadTracker._parse_json_list_static(raw)
-
-    @staticmethod
-    def _parse_json_list_static(raw: str | list | None) -> list[str]:
-        if isinstance(raw, list):
-            return [str(x) for x in raw]
-        if isinstance(raw, str):
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    return [str(x) for x in parsed]
-            except (json.JSONDecodeError, TypeError):
-                pass
-        return []
+        parsed = safe_parse_json(raw)
+        return {k: str(v) for k, v in parsed.items()}

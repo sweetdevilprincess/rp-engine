@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -56,7 +56,7 @@ def _row_to_response(row: dict) -> TriggerResponse:
 async def create_trigger(body: TriggerCreate, db=Depends(get_db)):
     """Create a new situational trigger."""
     trigger_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conditions_json = json.dumps([c.model_dump() for c in body.conditions])
 
     future = await db.enqueue_write(
@@ -129,7 +129,7 @@ async def update_trigger(
     if not updates:
         return _row_to_response(existing)
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     set_clauses = []
     params = []
 

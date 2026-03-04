@@ -185,9 +185,11 @@ class TimestampTracker:
 
         If override_minutes is set, skip activity detection.
         """
-        # Load current timestamp from scene_context
+        # Load current timestamp from CoW scene_state_entries
         row = await self.db.fetch_one(
-            "SELECT in_story_timestamp FROM scene_context WHERE rp_folder = ? AND branch = ?",
+            """SELECT in_story_timestamp FROM scene_state_entries
+               WHERE rp_folder = ? AND branch = ?
+               ORDER BY exchange_number DESC LIMIT 1""",
             [rp_folder, branch],
         )
         prev_ts_str = row["in_story_timestamp"] if row else None

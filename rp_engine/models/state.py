@@ -6,7 +6,6 @@ from pydantic import BaseModel
 
 from rp_engine.models.context import SceneState
 
-
 # ---------------------------------------------------------------------------
 # Character models
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ class TestFullIndex:
     async def test_indexes_all_entities(self, db, sample_card_dir):
         indexer = CardIndexer(db, sample_card_dir)
         result = await indexer.full_index("TestRP")
-        assert result["entities"] == 6  # character, memory, secret, location, plot_thread, knowledge
+        assert result["entities"] == 7  # character, memory, secret, location, plot_thread, knowledge, plot_arc
 
     async def test_indexes_connections(self, db, sample_card_dir):
         indexer = CardIndexer(db, sample_card_dir)
@@ -211,6 +211,68 @@ class TestRemoveFile:
 
         row = await db.fetch_one("SELECT * FROM story_cards WHERE name = 'Dante Moretti'")
         assert row is None
+
+
+class TestPlotArcIndexing:
+    async def test_plot_arc_type_detection(self, db, sample_card_dir):
+        indexer = CardIndexer(db, sample_card_dir)
+        await indexer.full_index("TestRP")
+        row = await db.fetch_one(
+            "SELECT card_type FROM story_cards WHERE name = ?",
+            ["Lilith's Infiltration"],
+        )
+        assert row is not None
+        assert row["card_type"] == "plot_arc"
+
+    async def test_plot_type_normalized_to_plot_arc(self, db, tmp_path):
+        """Cards with type: plot (old format) should normalize to plot_arc."""
+        rp = tmp_path / "TestRP" / "Story Cards" / "Plot Arcs"
+        rp.mkdir(parents=True)
+        (rp / "Test Arc.md").write_text(
+            '---\ntype: plot\nname: Test Arc\nrp: Mafia\n---\nTest.',
+            encoding="utf-8",
+        )
+        indexer = CardIndexer(db, tmp_path)
+        await indexer.full_index("TestRP")
+        row = await db.fetch_one(
+            "SELECT card_type FROM story_cards WHERE name = 'Test Arc'"
+        )
+        assert row is not None
+        assert row["card_type"] == "plot_arc"
+
+    async def test_plot_arc_key_characters_connections(self, db, sample_card_dir):
+        indexer = CardIndexer(db, sample_card_dir)
+        await indexer.full_index("TestRP")
+        conns = await db.fetch_all(
+            "SELECT * FROM entity_connections "
+            "WHERE from_entity = ? AND connection_type = 'involves_character'",
+            ["TestRP:lilith's infiltration"],
+        )
+        assert len(conns) >= 2
+        # Verify roles are preserved
+        roles = {c["role"] for c in conns if c["role"]}
+        assert "protagonist" in roles
+        assert "catalyst" in roles
+
+    async def test_plot_arc_related_memories_connections(self, db, sample_card_dir):
+        indexer = CardIndexer(db, sample_card_dir)
+        await indexer.full_index("TestRP")
+        conns = await db.fetch_all(
+            "SELECT * FROM entity_connections "
+            "WHERE from_entity = ? AND connection_type = 'involves_memory'",
+            ["TestRP:lilith's infiltration"],
+        )
+        assert len(conns) >= 1
+
+    async def test_plot_arc_related_threads_connections(self, db, sample_card_dir):
+        indexer = CardIndexer(db, sample_card_dir)
+        await indexer.full_index("TestRP")
+        conns = await db.fetch_all(
+            "SELECT * FROM entity_connections "
+            "WHERE from_entity = ? AND connection_type = 'related_thread'",
+            ["TestRP:lilith's infiltration"],
+        )
+        assert len(conns) >= 1
 
 
 class TestGetAllRpFolders:

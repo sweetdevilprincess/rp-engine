@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from rp_engine.database import Database, PRIORITY_EXCHANGE
-from rp_engine.dependencies import get_analysis_pipeline, get_branch_manager, get_db, get_state_manager
-from rp_engine.services.analysis_pipeline import AnalysisPipeline
-from rp_engine.services.branch_manager import BranchManager
-from rp_engine.services.state_manager import StateManager
+from rp_engine.database import PRIORITY_EXCHANGE, Database
+from rp_engine.dependencies import (
+    get_analysis_pipeline,
+    get_branch_manager,
+    get_db,
+    get_state_manager,
+)
 from rp_engine.models.exchange import (
     ExchangeDetail,
     ExchangeListResponse,
     ExchangeResponse,
     ExchangeSave,
 )
+from rp_engine.services.analysis_pipeline import AnalysisPipeline
+from rp_engine.services.branch_manager import BranchManager
+from rp_engine.services.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +91,11 @@ async def save_exchange(
         rp_folder = session["rp_folder"]
         branch = session["branch"]
 
-    # 2. Idempotency check
+    # 2. Idempotency check (uses dedicated column + unique index)
     if body.idempotency_key:
         existing = await db.fetch_one(
-            "SELECT * FROM exchanges WHERE metadata LIKE ?",
-            [f'%"idempotency_key": "{body.idempotency_key}"%'],
+            "SELECT * FROM exchanges WHERE rp_folder = ? AND branch = ? AND idempotency_key = ?",
+            [rp_folder, branch, body.idempotency_key],
         )
         if existing:
             return ExchangeResponse(
@@ -141,7 +146,7 @@ async def save_exchange(
                     counter += 1
                     new_branch_name = f"{branch}-rewind-{rewind_point}-{counter}"
 
-            now_ts = datetime.now(timezone.utc).isoformat()
+            now_ts = datetime.now(UTC).isoformat()
             # Create the rewind branch
             future = await db.enqueue_write(
                 """INSERT INTO branches (name, rp_folder, created_from, created_at,
@@ -172,7 +177,7 @@ async def save_exchange(
         exchange_number = (latest or 0) + 1
 
     # 5. Insert
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     metadata = body.metadata or {}
     if body.idempotency_key:
         metadata["idempotency_key"] = body.idempotency_key
@@ -180,13 +185,14 @@ async def save_exchange(
     future = await db.enqueue_write(
         """INSERT INTO exchanges (session_id, rp_folder, branch, exchange_number,
            user_message, assistant_response, in_story_timestamp, location,
-           analysis_status, created_at, metadata)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+           analysis_status, created_at, metadata, idempotency_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
         [
             session_id, rp_folder, branch, exchange_number,
             body.user_message, body.assistant_response,
             body.in_story_timestamp, body.location,
             now, json.dumps(metadata) if metadata else None,
+            body.idempotency_key,
         ],
         priority=PRIORITY_EXCHANGE,
     )

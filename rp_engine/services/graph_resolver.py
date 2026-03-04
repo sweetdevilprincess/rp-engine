@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from rp_engine.database import Database
 from rp_engine.utils.normalization import (

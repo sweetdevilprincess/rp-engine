@@ -1,6 +1,9 @@
 server:
   host: "0.0.0.0"
   port: 3000
+  cors_origins:
+    - "http://localhost:*"
+    - "http://127.0.0.1:*"
 
 paths:
   vault_root: ".."
@@ -27,6 +30,9 @@ search:
   similarity_threshold: 0.7
   chunk_size: 1000
   chunk_overlap: 200
+
+rp:
+  default_pov_character: "Lilith"
 
 trust:
   increase_value: 1

@@ -13,8 +13,9 @@ from rp_engine.services.timestamp_tracker import TimestampTracker
 async def ts_tracker(db: Database):
     """TimestampTracker with a scene context containing a timestamp."""
     await db.enqueue_write(
-        """INSERT INTO scene_context (rp_folder, branch, location, time_of_day, mood, in_story_timestamp)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO scene_state_entries
+           (rp_folder, branch, exchange_number, location, time_of_day, mood, in_story_timestamp, created_at)
+           VALUES (?, ?, 0, ?, ?, ?, ?, '2026-01-01T00:00:00')""",
         [
             "TestRP", "main", "The Warehouse", "evening", "tense",
             "[Wednesday, March 5, 2025 - 9:30 PM, The Warehouse]",

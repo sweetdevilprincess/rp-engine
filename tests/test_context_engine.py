@@ -237,12 +237,29 @@ class TestContextSentTracking:
 class TestCharacterStates:
     @pytest.mark.asyncio
     async def test_loads_character_states(self, db, context_engine):
+        card_id = "TestRP:lilith"
+        # Insert story card
         future = await db.enqueue_write(
-            """INSERT INTO characters
-                   (id, rp_folder, branch, name, location, emotional_state, conditions)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            ["test:lilith", "TestRP", "main", "Lilith", "warehouse",
-             "anxious", json.dumps(["armed"])],
+            """INSERT OR REPLACE INTO story_cards
+                   (id, rp_folder, file_path, card_type, name, importance, frontmatter, indexed_at)
+               VALUES (?, ?, ?, 'character', ?, 'supporting', '{}', '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "Story Cards/Characters/Lilith.md", "Lilith"],
+        )
+        await future
+        # Insert ledger entry
+        future = await db.enqueue_write(
+            """INSERT OR IGNORE INTO character_ledger
+                   (card_id, rp_folder, branch, status, activated_at_exchange, created_at)
+               VALUES (?, ?, ?, 'active', 0, '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "main"],
+        )
+        await future
+        # Insert runtime state
+        future = await db.enqueue_write(
+            """INSERT OR REPLACE INTO character_state_entries
+                   (card_id, rp_folder, branch, exchange_number, location, emotional_state, conditions, created_at)
+               VALUES (?, ?, ?, 0, ?, ?, ?, '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", "main", "warehouse", "anxious", json.dumps(["armed"])],
         )
         await future
 
@@ -293,33 +310,66 @@ class TestNPCBriefs:
     @pytest.mark.asyncio
     async def test_builds_brief_for_main_npc(self, db, context_engine):
         """Main NPCs get full briefs with trust stage."""
+        # The card indexer fixture already inserts Dante's story_card.
+        # We need to update its frontmatter to include behavioral_modifiers,
+        # plus add runtime state + trust data.
+        existing = await db.fetch_one(
+            "SELECT id FROM story_cards WHERE rp_folder = ? AND LOWER(name) = LOWER(?)",
+            ["TestRP", "Dante Moretti"],
+        )
+        sc_id = existing["id"] if existing else "TestRP:dante moretti"
+
+        # Update frontmatter to include PARANOID modifier
+        fm_updated = json.dumps({
+            "primary_archetype": "POWER_HOLDER",
+            "behavioral_modifiers": ["PARANOID"],
+            "is_player_character": False,
+            "always_load": True,
+            "importance": "main",
+        })
         future = await db.enqueue_write(
-            """INSERT INTO characters
-                   (id, rp_folder, branch, name, importance, primary_archetype,
-                    behavioral_modifiers, emotional_state, conditions)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                "test:dante moretti",
-                "TestRP",
-                "main",
-                "Dante Moretti",
-                "main",
-                "POWER_HOLDER",
-                json.dumps(["PARANOID"]),
-                "calm",
-                json.dumps(["armed"]),
-            ],
+            "UPDATE story_cards SET frontmatter = ? WHERE id = ?",
+            [fm_updated, sc_id],
         )
         await future
 
+        # Insert ledger entry
         future = await db.enqueue_write(
-            """INSERT INTO relationships
-                   (rp_folder, branch, character_a, character_b,
-                    initial_trust_score, trust_modification_sum)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            ["TestRP", "main", "Dante Moretti", "Lilith", 16, 5],
+            """INSERT OR IGNORE INTO character_ledger
+                   (card_id, rp_folder, branch, status, activated_at_exchange, created_at)
+               VALUES (?, ?, ?, 'active', 0, '2026-01-01T00:00:00')""",
+            [sc_id, "TestRP", "main"],
         )
         await future
+
+        # Insert runtime state
+        future = await db.enqueue_write(
+            """INSERT OR REPLACE INTO character_state_entries
+                   (card_id, rp_folder, branch, exchange_number, emotional_state, conditions, created_at)
+               VALUES (?, ?, ?, 0, ?, ?, '2026-01-01T00:00:00')""",
+            [sc_id, "TestRP", "main", "calm", json.dumps(["armed"])],
+        )
+        await future
+
+        # Insert trust baseline + modification
+        future = await db.enqueue_write(
+            """INSERT OR REPLACE INTO trust_baselines
+                   (character_a, character_b, rp_folder, branch, baseline_score, created_at)
+               VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00')""",
+            ["Dante Moretti", "Lilith", "TestRP", "main", 16],
+        )
+        await future
+        future = await db.enqueue_write(
+            """INSERT INTO trust_modifications
+                   (character_a, character_b, rp_folder, branch, exchange_number,
+                    change, direction, reason, date, created_at)
+               VALUES (?, ?, ?, ?, 0, ?, ?, ?, '', '2026-01-01T00:00:00')""",
+            ["Dante Moretti", "Lilith", "TestRP", "main", 5, "increase", "trust building"],
+        )
+        await future
+
+        import asyncio
+        await asyncio.sleep(0.1)
 
         request = ContextRequest(
             user_message="What?",

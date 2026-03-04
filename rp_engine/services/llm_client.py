@@ -138,16 +138,12 @@ class LLMClient:
             except httpx.TimeoutException as e:
                 raise LLMError(f"Request timed out: {e}") from e
 
-            # Update adaptive concurrency from rate limit headers
+            # Track rate limit headers for logging (semaphore stays fixed —
+            # replacing a Semaphore object drops any tasks currently waiting on it)
             remaining = resp.headers.get("x-ratelimit-remaining")
             if remaining is not None:
                 try:
                     self._last_remaining = int(remaining)
-                    # Shrink semaphore when running low
-                    if self._last_remaining < 3 and self._semaphore._value > 2:
-                        self._semaphore = asyncio.Semaphore(2)
-                    elif self._last_remaining > 10 and self._semaphore._value < 5:
-                        self._semaphore = asyncio.Semaphore(5)
                 except ValueError:
                     pass
 

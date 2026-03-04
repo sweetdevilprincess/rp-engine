@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from rp_engine.database import Database
-from rp_engine.dependencies import get_card_indexer, get_db, get_llm_client, get_vault_root
-from rp_engine.services.llm_client import LLMClient
+from rp_engine.dependencies import (
+    get_card_indexer,
+    get_db,
+    get_llm_client,
+    get_vault_root,
+)
+from rp_engine.models.frontmatter import FRONTMATTER_MODELS, validate_frontmatter
 from rp_engine.models.story_card import (
     CardListResponse,
     EntityConnection,
@@ -21,8 +28,9 @@ from rp_engine.models.story_card import (
     StoryCardUpdate,
 )
 from rp_engine.services.card_indexer import CARD_TYPE_DIRS, CardIndexer
+from rp_engine.services.llm_client import LLMClient
 from rp_engine.utils.frontmatter import serialize_frontmatter
-from rp_engine.utils.normalization import normalize_key
+from rp_engine.utils.normalization import generate_card_id, normalize_key
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +162,9 @@ async def suggest_card(
         "lore": "Lore Template.md",
         "organization": "Organization Template.md",
         "plot_thread": "Plot Thread Template.md",
+        "plot_arc": "Plot Arc Template.md",
+        "item": "Item Template.md",
+        "chapter_summary": "Chapter Template.md",
     }
     template_name = template_map.get(card_type, "NPC Template.md")
     template_path = vault_root / "z_templates" / "Story Cards" / template_name
@@ -230,8 +241,8 @@ async def audit_cards(
     common_words = {
         "the", "and", "but", "for", "not", "you", "all", "can", "her", "was",
         "one", "our", "out", "his", "has", "its", "let", "say", "she", "too",
-        "use", "she", "him", "how", "man", "new", "now", "old", "see", "way",
-        "who", "did", "get", "has", "him", "his", "let", "may", "any", "day",
+        "use", "him", "how", "man", "new", "now", "old", "see", "way",
+        "who", "did", "get", "may", "any", "day",
     }
 
     entity_mentions: dict[str, list[int]] = {}
@@ -271,6 +282,28 @@ async def audit_cards(
         "total_exchanges_scanned": len(rows),
         "total_gaps": len(gaps),
     }
+
+
+class CardValidateRequest(BaseModel):
+    card_type: str
+    frontmatter: dict[str, Any]
+
+
+# IMPORTANT: /schema and /validate must be defined BEFORE /{card_type} to avoid route shadowing
+@router.get("/schema/{card_type}")
+async def get_schema(card_type: str):
+    """Return JSON schema for a card type's frontmatter."""
+    model = FRONTMATTER_MODELS.get(card_type)
+    if not model:
+        raise HTTPException(400, detail=f"Unknown card type: {card_type}")
+    return model.model_json_schema()
+
+
+@router.post("/validate")
+async def validate_card(body: CardValidateRequest):
+    """Validate card frontmatter against schema."""
+    valid, errors, warnings = validate_frontmatter(body.card_type, body.frontmatter)
+    return {"valid": valid, "errors": errors, "warnings": warnings}
 
 
 @router.get("/{card_type}/{name}", response_model=StoryCardDetail)
@@ -348,15 +381,28 @@ async def create_card(
     if card_type not in CARD_TYPE_DIRS:
         raise HTTPException(400, detail=f"Unknown card type: {card_type}")
 
+    # Auto-generate card_id if not provided
+    card_id = body.frontmatter.get("card_id")
+    if not card_id:
+        card_id = generate_card_id(card_type, body.name)
+
     dir_name = CARD_TYPE_DIRS[card_type]
     card_dir = vault_root / rp_folder / "Story Cards" / dir_name
     card_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = card_dir / f"{body.name}.md"
+    # Use card_id as filename
+    file_path = card_dir / f"{card_id}.md"
     if file_path.exists():
-        raise HTTPException(409, detail=f"Card already exists: {body.name}")
+        raise HTTPException(409, detail=f"Card already exists: {card_id}")
 
-    frontmatter = {"type": card_type, "name": body.name, **body.frontmatter}
+    frontmatter = {"type": card_type, "card_id": card_id, "name": body.name, **body.frontmatter}
+    frontmatter["card_id"] = card_id  # ensure card_id wins over any provided value
+
+    # Validate frontmatter (warn but don't block)
+    valid, errors, _warnings = validate_frontmatter(card_type, frontmatter)
+    if not valid:
+        logger.warning("Frontmatter validation errors for %s: %s", card_id, errors)
+
     content = serialize_frontmatter(frontmatter, body.content)
     file_path.write_text(content, encoding="utf-8")
 

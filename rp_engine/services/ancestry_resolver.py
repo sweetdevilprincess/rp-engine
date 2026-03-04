@@ -20,7 +20,6 @@ Trust shortcut (no full ancestry walk needed):
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 
 from rp_engine.database import Database
 

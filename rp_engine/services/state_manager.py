@@ -11,15 +11,14 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rp_engine.config import TrustConfig
-from rp_engine.database import PRIORITY_ANALYSIS, PRIORITY_EXCHANGE, Database
+from rp_engine.database import PRIORITY_ANALYSIS, Database
 from rp_engine.models.context import SceneState
 from rp_engine.models.state import (
     CharacterDetail,
     CharacterUpdate,
-    EventCreate,
     EventDetail,
     RelationshipDetail,
     SceneUpdate,
@@ -28,21 +27,9 @@ from rp_engine.models.state import (
 )
 from rp_engine.services.ancestry_resolver import AncestryResolver
 from rp_engine.services.context_engine import trust_stage
+from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_json_list(raw: str | list | None) -> list[str]:
-    """Safely parse a JSON string into a list, or return as-is if already a list."""
-    if raw is None:
-        return []
-    if isinstance(raw, list):
-        return raw
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, list) else []
-    except (json.JSONDecodeError, TypeError):
-        return []
 
 
 class StateManager:
@@ -96,27 +83,6 @@ class StateManager:
             [rp_folder, name],
         )
         if not card:
-            # Fall back to old characters table during migration period
-            # Try current branch first
-            row = await self.db.fetch_one(
-                """SELECT * FROM characters
-                   WHERE rp_folder = ? AND branch = ? AND LOWER(name) = LOWER(?)""",
-                [rp_folder, branch, name],
-            )
-            if row:
-                return self._row_to_character(row)
-
-            # Walk ancestry to find character on parent branches
-            if self.resolver:
-                chain = await self.resolver.get_ancestry_chain(rp_folder, branch)
-                for chain_branch, _ in chain[1:]:  # skip current branch (already checked)
-                    row = await self.db.fetch_one(
-                        """SELECT * FROM characters
-                           WHERE rp_folder = ? AND branch = ? AND LOWER(name) = LOWER(?)""",
-                        [rp_folder, chain_branch, name],
-                    )
-                    if row:
-                        return self._row_to_character(row)
             return None
 
         # 2. Resolve runtime state through ancestry
@@ -127,12 +93,7 @@ class StateManager:
             )
 
         # 3. Build CharacterDetail from card + runtime state
-        fm = {}
-        if card.get("frontmatter"):
-            try:
-                fm = json.loads(card["frontmatter"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        fm = safe_parse_json(card.get("frontmatter"))
 
         return CharacterDetail(
             name=card["name"],
@@ -141,9 +102,9 @@ class StateManager:
             importance=card.get("importance") or fm.get("importance"),
             primary_archetype=fm.get("primary_archetype"),
             secondary_archetype=fm.get("secondary_archetype"),
-            behavioral_modifiers=_parse_json_list(fm.get("behavioral_modifiers")),
+            behavioral_modifiers=safe_parse_json_list(fm.get("behavioral_modifiers")),
             location=runtime.get("location") if runtime else None,
-            conditions=_parse_json_list(runtime.get("conditions") if runtime else None),
+            conditions=safe_parse_json_list(runtime.get("conditions") if runtime else None),
             emotional_state=runtime.get("emotional_state") if runtime else None,
             last_seen=runtime.get("last_seen") if runtime else None,
             updated_at=runtime.get("created_at") if runtime else None,
@@ -159,51 +120,38 @@ class StateManager:
             [rp_folder, branch],
         )
 
-        if ledger_rows:
-            result = {}
-            for lr in ledger_rows:
-                card = await self.db.fetch_one(
-                    "SELECT * FROM story_cards WHERE id = ?", [lr["card_id"]]
+        result = {}
+        for lr in ledger_rows:
+            card = await self.db.fetch_one(
+                "SELECT * FROM story_cards WHERE id = ?", [lr["card_id"]]
+            )
+            if not card:
+                continue
+
+            runtime = None
+            if self.resolver:
+                runtime = await self.resolver.resolve_character_state(
+                    lr["card_id"], rp_folder, branch
                 )
-                if not card:
-                    continue
 
-                runtime = None
-                if self.resolver:
-                    runtime = await self.resolver.resolve_character_state(
-                        lr["card_id"], rp_folder, branch
-                    )
+            fm = safe_parse_json(card.get("frontmatter"))
 
-                fm = {}
-                if card.get("frontmatter"):
-                    try:
-                        fm = json.loads(card["frontmatter"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                detail = CharacterDetail(
-                    name=card["name"],
-                    card_path=card.get("file_path"),
-                    is_player_character=bool(fm.get("is_player_character", False)),
-                    importance=card.get("importance") or fm.get("importance"),
-                    primary_archetype=fm.get("primary_archetype"),
-                    secondary_archetype=fm.get("secondary_archetype"),
-                    behavioral_modifiers=_parse_json_list(fm.get("behavioral_modifiers")),
-                    location=runtime.get("location") if runtime else None,
-                    conditions=_parse_json_list(runtime.get("conditions") if runtime else None),
-                    emotional_state=runtime.get("emotional_state") if runtime else None,
-                    last_seen=runtime.get("last_seen") if runtime else None,
-                    updated_at=runtime.get("created_at") if runtime else None,
-                )
-                result[card["name"]] = detail
-            return result
-
-        # Fall back to old characters table during migration period
-        rows = await self.db.fetch_all(
-            "SELECT * FROM characters WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, branch],
-        )
-        return {row["name"]: self._row_to_character(row) for row in rows}
+            detail = CharacterDetail(
+                name=card["name"],
+                card_path=card.get("file_path"),
+                is_player_character=bool(fm.get("is_player_character", False)),
+                importance=card.get("importance") or fm.get("importance"),
+                primary_archetype=fm.get("primary_archetype"),
+                secondary_archetype=fm.get("secondary_archetype"),
+                behavioral_modifiers=safe_parse_json_list(fm.get("behavioral_modifiers")),
+                location=runtime.get("location") if runtime else None,
+                conditions=safe_parse_json_list(runtime.get("conditions") if runtime else None),
+                emotional_state=runtime.get("emotional_state") if runtime else None,
+                last_seen=runtime.get("last_seen") if runtime else None,
+                updated_at=runtime.get("created_at") if runtime else None,
+            )
+            result[card["name"]] = detail
+        return result
 
     async def get_characters_at_location(
         self, location: str, rp_folder: str, branch: str = "main"
@@ -228,7 +176,7 @@ class StateManager:
         Creates a full snapshot by merging updates with the current resolved state.
         Also ensures the character exists in the ledger.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         exchange_number = await self._resolve_exchange_number(exchange_id, rp_folder, branch)
 
         # 1. Find or create the character's card_id
@@ -299,68 +247,12 @@ class StateManager:
             )
             await future
         else:
-            # No story card — fall back to old characters table for compatibility
-            char_id = f"{rp_folder}:{branch}:{name.lower()}"
-            existing = await self.db.fetch_one(
-                "SELECT * FROM characters WHERE id = ?", [char_id]
-            )
-
-            if existing:
-                new_location = updates.location if updates.location is not None else existing.get("location")
-                new_conditions = (
-                    json.dumps(updates.conditions)
-                    if updates.conditions is not None
-                    else existing.get("conditions")
-                )
-                new_emotional = (
-                    updates.emotional_state
-                    if updates.emotional_state is not None
-                    else existing.get("emotional_state")
-                )
-                new_last_seen = (
-                    updates.last_seen if updates.last_seen is not None else existing.get("last_seen")
-                )
-
-                future = await self.db.enqueue_write(
-                    """UPDATE characters
-                       SET location = ?, conditions = ?, emotional_state = ?,
-                           last_seen = ?, updated_at = ?
-                       WHERE id = ?""",
-                    [new_location, new_conditions, new_emotional, new_last_seen, now, char_id],
-                    priority=PRIORITY_ANALYSIS,
-                )
-                await future
-            else:
-                conditions_json = json.dumps(updates.conditions) if updates.conditions else "[]"
-                future = await self.db.enqueue_write(
-                    """INSERT INTO characters (id, rp_folder, branch, name, location,
-                           conditions, emotional_state, last_seen, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [char_id, rp_folder, branch, name, updates.location,
-                     conditions_json, updates.emotional_state, updates.last_seen, now],
-                    priority=PRIORITY_ANALYSIS,
-                )
-                await future
+            # No story card found — cannot update character without a card
+            logger.warning("No story card found for character '%s' in rp_folder '%s'", name, rp_folder)
+            return CharacterDetail(name=name)
 
         result = await self.get_character(name, rp_folder, branch)
         return result  # type: ignore[return-value]
-
-    def _row_to_character(self, row: dict) -> CharacterDetail:
-        """Convert a legacy characters table row to a CharacterDetail model."""
-        return CharacterDetail(
-            name=row["name"],
-            card_path=row.get("card_path"),
-            is_player_character=bool(row.get("is_player_character")),
-            importance=row.get("importance"),
-            primary_archetype=row.get("primary_archetype"),
-            secondary_archetype=row.get("secondary_archetype"),
-            behavioral_modifiers=_parse_json_list(row.get("behavioral_modifiers")),
-            location=row.get("location"),
-            conditions=_parse_json_list(row.get("conditions")),
-            emotional_state=row.get("emotional_state"),
-            last_seen=row.get("last_seen"),
-            updated_at=row.get("updated_at"),
-        )
 
     # ===================================================================
     # Relationships & Trust
@@ -370,67 +262,48 @@ class StateManager:
         self, char_a: str, char_b: str, rp_folder: str, branch: str = "main"
     ) -> RelationshipDetail | None:
         """Fetch a relationship between two characters using ancestry-resolved trust."""
-        if self.resolver:
-            trust_data = await self.resolver.resolve_trust(char_a, char_b, rp_folder, branch)
-            # Also check reverse direction
-            trust_data_rev = await self.resolver.resolve_trust(char_b, char_a, rp_folder, branch)
-
-            # Use whichever has data (or merge both)
-            if trust_data["live_score"] == 0 and trust_data_rev["live_score"] != 0:
-                trust_data = trust_data_rev
-                char_a, char_b = char_b, char_a
-
-            if trust_data["live_score"] == 0 and trust_data["baseline_score"] == 0:
-                # Check old relationships table as fallback
-                row = await self.db.fetch_one(
-                    """SELECT * FROM relationships
-                       WHERE rp_folder = ? AND branch = ?
-                         AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                           OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-                    [rp_folder, branch, char_a, char_b, char_b, char_a],
-                )
-                if row:
-                    return await self._row_to_relationship(row)
-                return None
-
-            # Get modification history
-            mods = await self.resolver.resolve_trust_full_history(
-                char_a, char_b, rp_folder, branch
-            )
-            modifications = [
-                TrustModification(
-                    date=m.get("date"),
-                    change=m.get("change") or 0,
-                    direction=m.get("direction") or "neutral",
-                    reason=m.get("reason"),
-                    exchange_id=m.get("exchange_id"),
-                    branch=m.get("branch"),
-                    exchange_number=m.get("exchange_number"),
-                )
-                for m in mods
-            ]
-
-            return RelationshipDetail(
-                character_a=char_a,
-                character_b=char_b,
-                initial_trust_score=trust_data["baseline_score"],
-                trust_modification_sum=trust_data["branch_modifications_sum"],
-                live_trust_score=trust_data["live_score"],
-                trust_stage=trust_data["trust_stage"],
-                modifications=modifications,
-            )
-
-        # Fallback: old relationships table
-        row = await self.db.fetch_one(
-            """SELECT * FROM relationships
-               WHERE rp_folder = ? AND branch = ?
-                 AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                   OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-            [rp_folder, branch, char_a, char_b, char_b, char_a],
-        )
-        if not row:
+        if not self.resolver:
+            logger.warning("get_relationship called without resolver")
             return None
-        return await self._row_to_relationship(row)
+
+        trust_data = await self.resolver.resolve_trust(char_a, char_b, rp_folder, branch)
+        # Also check reverse direction
+        trust_data_rev = await self.resolver.resolve_trust(char_b, char_a, rp_folder, branch)
+
+        # Use whichever has data (or merge both)
+        if trust_data["live_score"] == 0 and trust_data_rev["live_score"] != 0:
+            trust_data = trust_data_rev
+            char_a, char_b = char_b, char_a
+
+        if trust_data["live_score"] == 0 and trust_data["baseline_score"] == 0:
+            return None
+
+        # Get modification history
+        mods = await self.resolver.resolve_trust_full_history(
+            char_a, char_b, rp_folder, branch
+        )
+        modifications = [
+            TrustModification(
+                date=m.get("date"),
+                change=m.get("change") or 0,
+                direction=m.get("direction") or "neutral",
+                reason=m.get("reason"),
+                exchange_id=m.get("exchange_id"),
+                branch=m.get("branch"),
+                exchange_number=m.get("exchange_number"),
+            )
+            for m in mods
+        ]
+
+        return RelationshipDetail(
+            character_a=char_a,
+            character_b=char_b,
+            initial_trust_score=trust_data["baseline_score"],
+            trust_modification_sum=trust_data["branch_modifications_sum"],
+            live_trust_score=trust_data["live_score"],
+            trust_stage=trust_data["trust_stage"],
+            modifications=modifications,
+        )
 
     async def get_all_relationships(
         self,
@@ -439,59 +312,39 @@ class StateManager:
         character: str | None = None,
     ) -> list[RelationshipDetail]:
         """Fetch all relationships, optionally filtered by character."""
-        if self.resolver:
-            # Get all trust baselines for this branch
-            if character:
-                baseline_rows = await self.db.fetch_all(
-                    """SELECT * FROM trust_baselines
-                       WHERE rp_folder = ? AND branch = ?
-                         AND (LOWER(character_a) = LOWER(?) OR LOWER(character_b) = LOWER(?))""",
-                    [rp_folder, branch, character, character],
-                )
-            else:
-                baseline_rows = await self.db.fetch_all(
-                    "SELECT * FROM trust_baselines WHERE rp_folder = ? AND branch = ?",
-                    [rp_folder, branch],
-                )
+        if not self.resolver:
+            logger.warning("get_all_relationships called without resolver")
+            return []
 
-            results = []
-            seen_pairs: set[tuple[str, str]] = set()
-            for br in baseline_rows:
-                pair = (br["character_a"], br["character_b"])
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
-
-                rel = await self.get_relationship(
-                    br["character_a"], br["character_b"], rp_folder, branch
-                )
-                if rel:
-                    results.append(rel)
-
-            # Also check old relationships table for any not yet migrated
-            if not results:
-                return await self._get_all_relationships_legacy(rp_folder, branch, character)
-            return results
-
-        return await self._get_all_relationships_legacy(rp_folder, branch, character)
-
-    async def _get_all_relationships_legacy(
-        self, rp_folder: str, branch: str, character: str | None
-    ) -> list[RelationshipDetail]:
-        """Legacy: fetch from old relationships table."""
+        # Get all trust baselines for this branch
         if character:
-            rows = await self.db.fetch_all(
-                """SELECT * FROM relationships
+            baseline_rows = await self.db.fetch_all(
+                """SELECT * FROM trust_baselines
                    WHERE rp_folder = ? AND branch = ?
                      AND (LOWER(character_a) = LOWER(?) OR LOWER(character_b) = LOWER(?))""",
                 [rp_folder, branch, character, character],
             )
         else:
-            rows = await self.db.fetch_all(
-                "SELECT * FROM relationships WHERE rp_folder = ? AND branch = ?",
+            baseline_rows = await self.db.fetch_all(
+                "SELECT * FROM trust_baselines WHERE rp_folder = ? AND branch = ?",
                 [rp_folder, branch],
             )
-        return [await self._row_to_relationship(row) for row in rows]
+
+        results = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for br in baseline_rows:
+            pair = (br["character_a"], br["character_b"])
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+
+            rel = await self.get_relationship(
+                br["character_a"], br["character_b"], rp_folder, branch
+            )
+            if rel:
+                results.append(rel)
+
+        return results
 
     async def update_trust(
         self,
@@ -506,30 +359,19 @@ class StateManager:
     ) -> RelationshipDetail:
         """Apply a trust change between two characters.
 
-        Uses the new trust_modifications columns (character_a, character_b, branch,
+        Uses trust_modifications with direct columns (character_a, character_b, branch,
         exchange_number, rp_folder) for direct querying without JOIN.
         Checks session caps and score bounds.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        if not self.resolver:
+            raise RuntimeError("update_trust requires an AncestryResolver")
+
+        now = datetime.now(UTC).isoformat()
         exchange_number = await self._resolve_exchange_number(exchange_id, rp_folder, branch)
 
-        # Resolve current trust
-        if self.resolver:
-            trust_data = await self.resolver.resolve_trust(char_a, char_b, rp_folder, branch)
-            current_live = trust_data["live_score"]
-        else:
-            # Legacy fallback
-            rel_row = await self.db.fetch_one(
-                """SELECT * FROM relationships
-                   WHERE rp_folder = ? AND branch = ?
-                     AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                       OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-                [rp_folder, branch, char_a, char_b, char_b, char_a],
-            )
-            if rel_row:
-                current_live = (rel_row.get("initial_trust_score") or 0) + (rel_row.get("trust_modification_sum") or 0)
-            else:
-                current_live = 0
+        # Resolve current trust through ancestry
+        trust_data = await self.resolver.resolve_trust(char_a, char_b, rp_folder, branch)
+        current_live = trust_data["live_score"]
 
         # Check session caps (in-memory)
         cap_key = (char_a.lower(), char_b.lower(), rp_folder, branch)
@@ -579,19 +421,29 @@ class StateManager:
         elif effective_change < 0:
             caps["lost"] += effective_change
 
-        # Update legacy relationships table for backward compat during migration
-        # (also returns the relationship_id for the trust_modification)
-        rel_id = await self._update_legacy_relationship(
-            char_a, char_b, effective_change, rp_folder, branch, now, exchange_id
+        # Ensure trust baseline exists for this pair/branch
+        existing_baseline = await self.db.fetch_one(
+            """SELECT * FROM trust_baselines
+               WHERE character_a = ? AND character_b = ? AND rp_folder = ? AND branch = ?""",
+            [char_a, char_b, rp_folder, branch],
         )
+        if not existing_baseline:
+            future = await self.db.enqueue_write(
+                """INSERT OR IGNORE INTO trust_baselines
+                       (character_a, character_b, rp_folder, branch, baseline_score, created_at)
+                   VALUES (?, ?, ?, ?, 0, ?)""",
+                [char_a, char_b, rp_folder, branch, now],
+                priority=PRIORITY_ANALYSIS,
+            )
+            await future
 
-        # Insert trust modification with BOTH old relationship_id AND new direct columns
+        # Insert trust modification with direct columns
         future = await self.db.enqueue_write(
             """INSERT INTO trust_modifications
-                   (relationship_id, date, change, direction, reason, exchange_id, created_at,
+                   (date, change, direction, reason, exchange_id, created_at,
                     character_a, character_b, branch, exchange_number, rp_folder)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [rel_id, now[:10], effective_change, direction, reason, exchange_id, now,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [now[:10], effective_change, direction, reason, exchange_id, now,
              char_a, char_b, branch, exchange_number, rp_folder],
             priority=PRIORITY_ANALYSIS,
         )
@@ -607,59 +459,6 @@ class StateManager:
             trust_stage=trust_stage(current_live + effective_change),
         )
 
-    async def _update_legacy_relationship(
-        self, char_a: str, char_b: str, change: int,
-        rp_folder: str, branch: str, now: str, exchange_id: int | None,
-    ) -> int | None:
-        """Update old relationships table for backward compat. Returns relationship_id."""
-        rel_row = await self.db.fetch_one(
-            """SELECT * FROM relationships
-               WHERE rp_folder = ? AND branch = ?
-                 AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                   OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-            [rp_folder, branch, char_a, char_b, char_b, char_a],
-        )
-
-        if not rel_row:
-            # Create legacy relationship
-            future = await self.db.enqueue_write(
-                """INSERT INTO relationships
-                       (rp_folder, branch, character_a, character_b,
-                        initial_trust_score, trust_modification_sum,
-                        session_trust_gained, session_trust_lost, updated_at)
-                   VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)""",
-                [rp_folder, branch, char_a, char_b,
-                 change, max(change, 0), min(change, 0), now],
-                priority=PRIORITY_ANALYSIS,
-            )
-            rel_id = await future
-
-            # Re-fetch to get the auto-generated ID
-            new_rel = await self.db.fetch_one(
-                """SELECT id FROM relationships
-                   WHERE rp_folder = ? AND branch = ?
-                     AND LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)""",
-                [rp_folder, branch, char_a, char_b],
-            )
-            return new_rel["id"] if new_rel else None
-        else:
-            new_mod_sum = (rel_row.get("trust_modification_sum") or 0) + change
-            initial = rel_row.get("initial_trust_score") or 0
-            new_stage = trust_stage(initial + new_mod_sum)
-            new_gained = (rel_row.get("session_trust_gained") or 0) + (change if change > 0 else 0)
-            new_lost = (rel_row.get("session_trust_lost") or 0) + (change if change < 0 else 0)
-
-            future = await self.db.enqueue_write(
-                """UPDATE relationships
-                   SET trust_modification_sum = ?, trust_stage = ?,
-                       session_trust_gained = ?, session_trust_lost = ?, updated_at = ?
-                   WHERE id = ?""",
-                [new_mod_sum, new_stage, new_gained, new_lost, now, rel_row["id"]],
-                priority=PRIORITY_ANALYSIS,
-            )
-            await future
-            return rel_row["id"]
-
     async def reset_session_caps(self, rp_folder: str, branch: str = "main") -> None:
         """Reset in-memory session trust caps. Called at session start."""
         keys_to_clear = [
@@ -668,51 +467,6 @@ class StateManager:
         ]
         for k in keys_to_clear:
             del self._session_trust_caps[k]
-
-        # Also reset legacy table caps
-        future = await self.db.enqueue_write(
-            """UPDATE relationships
-               SET session_trust_gained = 0, session_trust_lost = 0
-               WHERE rp_folder = ? AND branch = ?""",
-            [rp_folder, branch],
-            priority=PRIORITY_ANALYSIS,
-        )
-        await future
-
-    async def _row_to_relationship(self, row: dict) -> RelationshipDetail:
-        """Convert a legacy relationship row to a RelationshipDetail."""
-        initial = row.get("initial_trust_score") or 0
-        mod_sum = row.get("trust_modification_sum") or 0
-        live = initial + mod_sum
-
-        mod_rows = await self.db.fetch_all(
-            """SELECT date, change, direction, reason, exchange_id
-               FROM trust_modifications
-               WHERE relationship_id = ?
-               ORDER BY created_at DESC""",
-            [row["id"]],
-        )
-        modifications = [
-            TrustModification(
-                date=m.get("date"),
-                change=m.get("change") or 0,
-                direction=m.get("direction") or "neutral",
-                reason=m.get("reason"),
-                exchange_id=m.get("exchange_id"),
-            )
-            for m in mod_rows
-        ]
-
-        return RelationshipDetail(
-            character_a=row["character_a"],
-            character_b=row["character_b"],
-            initial_trust_score=initial,
-            trust_modification_sum=mod_sum,
-            live_trust_score=live,
-            trust_stage=trust_stage(live),
-            dynamic=row.get("dynamic"),
-            modifications=modifications,
-        )
 
     # ===================================================================
     # Scene Context
@@ -731,19 +485,6 @@ class StateManager:
                     mood=row.get("mood"),
                     in_story_timestamp=row.get("in_story_timestamp"),
                 )
-
-        # Fallback: old scene_context table
-        row = await self.db.fetch_one(
-            "SELECT location, time_of_day, mood, in_story_timestamp FROM scene_context WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, branch],
-        )
-        if row:
-            return SceneState(
-                location=row.get("location"),
-                time_of_day=row.get("time_of_day"),
-                mood=row.get("mood"),
-                in_story_timestamp=row.get("in_story_timestamp"),
-            )
         return SceneState()
 
     async def update_scene(
@@ -757,7 +498,7 @@ class StateManager:
 
         Merges updates with current resolved state.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         exchange_number = await self._resolve_exchange_number(exchange_id, rp_folder, branch)
 
         # Resolve current state
@@ -780,66 +521,11 @@ class StateManager:
         )
         await future
 
-        # Also update legacy scene_context for backward compat
-        existing = await self.db.fetch_one(
-            "SELECT * FROM scene_context WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, branch],
-        )
-        if existing:
-            future = await self.db.enqueue_write(
-                """UPDATE scene_context
-                   SET location = ?, time_of_day = ?, mood = ?,
-                       in_story_timestamp = ?, updated_at = ?
-                   WHERE rp_folder = ? AND branch = ?""",
-                [new_location, new_time, new_mood, new_ts, now, rp_folder, branch],
-                priority=PRIORITY_ANALYSIS,
-            )
-            await future
-        else:
-            future = await self.db.enqueue_write(
-                """INSERT INTO scene_context
-                       (rp_folder, branch, location, time_of_day, mood, in_story_timestamp, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                [rp_folder, branch, new_location, new_time, new_mood, new_ts, now],
-                priority=PRIORITY_ANALYSIS,
-            )
-            await future
-
         return SceneState(
             location=new_location,
             time_of_day=new_time,
             mood=new_mood,
             in_story_timestamp=new_ts,
-        )
-
-    # ===================================================================
-    # Rewind Support (deprecated — kept as no-ops for backward compat)
-    # ===================================================================
-
-    VALID_CHAR_FIELDS = {"location", "conditions", "emotional_state", "last_seen"}
-    VALID_SCENE_FIELDS = {"location", "time_of_day", "mood", "in_story_timestamp"}
-
-    async def revert_exchange_state(
-        self, exchange_id: int, rp_folder: str, branch: str
-    ) -> None:
-        """Deprecated: Rewind now creates a branch instead of reverting.
-
-        Kept as a no-op for backward compatibility during migration.
-        Legacy callers (exchanges router) will be updated in Phase 4.
-        """
-        logger.debug(
-            "revert_exchange_state called (no-op in CoW system): exchange_id=%d", exchange_id
-        )
-
-    async def recalculate_trust_aggregates(
-        self, rp_folder: str, branch: str
-    ) -> None:
-        """Deprecated: Trust is always computed from baseline + sum in CoW system.
-
-        Kept as a no-op for backward compatibility during migration.
-        """
-        logger.debug(
-            "recalculate_trust_aggregates called (no-op in CoW system): %s/%s", rp_folder, branch
         )
 
     # ===================================================================
@@ -883,7 +569,7 @@ class StateManager:
         in_story_timestamp: str | None = None,
     ) -> EventDetail:
         """Insert a new event and return it."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         chars_json = json.dumps(characters)
 
         future = await self.db.enqueue_write(
@@ -905,7 +591,7 @@ class StateManager:
             id=row["id"],
             in_story_timestamp=row.get("in_story_timestamp"),
             event=row["event"],
-            characters=_parse_json_list(row.get("characters")),
+            characters=safe_parse_json_list(row.get("characters")),
             significance=row.get("significance"),
             exchange_id=row.get("exchange_id"),
             created_at=row.get("created_at"),

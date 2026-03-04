@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 import pytest_asyncio
 
 from rp_engine.config import TrustConfig
 from rp_engine.database import PRIORITY_ANALYSIS, Database
+from rp_engine.services.ancestry_resolver import AncestryResolver
 from rp_engine.services.state_manager import StateManager
 
 
@@ -21,7 +23,8 @@ BRANCH = "main"
 
 
 def _make_state_manager(db: Database) -> StateManager:
-    return StateManager(db=db, config=TrustConfig())
+    resolver = AncestryResolver(db)
+    return StateManager(db=db, config=TrustConfig(), resolver=resolver)
 
 
 async def _insert_character(
@@ -31,33 +34,57 @@ async def _insert_character(
     branch: str = BRANCH,
     **overrides,
 ) -> None:
-    char_id = f"{rp_folder}:{branch}:{name.lower()}"
-    defaults = {
-        "id": char_id,
-        "rp_folder": rp_folder,
-        "branch": branch,
-        "name": name,
-        "card_path": None,
-        "is_player_character": False,
-        "importance": "main",
-        "primary_archetype": None,
-        "secondary_archetype": None,
-        "behavioral_modifiers": "[]",
-        "location": None,
-        "conditions": "[]",
-        "emotional_state": None,
-        "last_seen": None,
-        "updated_at": None,
+    """Insert a character via story_cards + character_ledger + character_state_entries."""
+    card_id = f"{rp_folder}:{name.lower()}"
+    now = "2026-01-01T00:00:00"
+
+    # 1. Insert story card
+    fm = {
+        "is_player_character": overrides.pop("is_player_character", False),
+        "importance": overrides.get("importance", "main"),
+        "primary_archetype": overrides.pop("primary_archetype", None),
+        "secondary_archetype": overrides.pop("secondary_archetype", None),
+        "behavioral_modifiers": json.loads(overrides.pop("behavioral_modifiers", "[]"))
+            if isinstance(overrides.get("behavioral_modifiers"), str)
+            else overrides.pop("behavioral_modifiers", []),
     }
-    defaults.update(overrides)
-    cols = ", ".join(defaults.keys())
-    placeholders = ", ".join(["?"] * len(defaults))
     future = await db.enqueue_write(
-        f"INSERT INTO characters ({cols}) VALUES ({placeholders})",
-        list(defaults.values()),
+        """INSERT OR IGNORE INTO story_cards
+               (id, rp_folder, file_path, card_type, name, importance, frontmatter, indexed_at)
+           VALUES (?, ?, ?, 'character', ?, ?, ?, ?)""",
+        [card_id, rp_folder, f"Story Cards/Characters/{name}.md", name,
+         overrides.pop("importance", "main"), json.dumps(fm), now],
         priority=PRIORITY_ANALYSIS,
     )
     await future
+
+    # 2. Insert character_ledger entry
+    future = await db.enqueue_write(
+        """INSERT OR IGNORE INTO character_ledger
+               (card_id, rp_folder, branch, status, activated_at_exchange, created_at)
+           VALUES (?, ?, ?, 'active', 0, ?)""",
+        [card_id, rp_folder, branch, now],
+        priority=PRIORITY_ANALYSIS,
+    )
+    await future
+
+    # 3. Insert runtime state if any runtime fields provided
+    location = overrides.pop("location", None)
+    conditions = overrides.pop("conditions", "[]")
+    emotional_state = overrides.pop("emotional_state", None)
+    last_seen = overrides.pop("last_seen", None)
+
+    if location or emotional_state or last_seen or conditions != "[]":
+        future = await db.enqueue_write(
+            """INSERT OR REPLACE INTO character_state_entries
+                   (card_id, rp_folder, branch, exchange_number,
+                    location, conditions, emotional_state, last_seen, created_at)
+               VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)""",
+            [card_id, rp_folder, branch, location, conditions,
+             emotional_state, last_seen, now],
+            priority=PRIORITY_ANALYSIS,
+        )
+        await future
 
 
 async def _insert_relationship(
@@ -67,18 +94,18 @@ async def _insert_relationship(
     rp_folder: str = RP,
     branch: str = BRANCH,
     initial_trust: int = 0,
-) -> int:
+) -> None:
+    """Insert a relationship via trust_baselines."""
+    now = "2026-01-01T00:00:00"
     future = await db.enqueue_write(
-        """INSERT INTO relationships
-               (rp_folder, branch, character_a, character_b,
-                initial_trust_score, trust_modification_sum,
-                session_trust_gained, session_trust_lost)
-           VALUES (?, ?, ?, ?, ?, 0, 0, 0)""",
-        [rp_folder, branch, char_a, char_b, initial_trust],
+        """INSERT OR IGNORE INTO trust_baselines
+               (character_a, character_b, rp_folder, branch,
+                baseline_score, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        [char_a, char_b, rp_folder, branch, initial_trust, now],
         priority=PRIORITY_ANALYSIS,
     )
-    row_id = await future
-    return row_id
+    await future
 
 
 async def _insert_event(
@@ -154,7 +181,18 @@ class TestCharacterState:
         assert at_warehouse[0].name == "Dante"
 
     @pytest.mark.asyncio
-    async def test_update_character_creates_if_missing(self, db):
+    async def test_update_character_creates_ledger_entry(self, db):
+        """Updating a character with a story card but no ledger entry creates one."""
+        # Insert story card only (no ledger/state entry)
+        future = await db.enqueue_write(
+            """INSERT INTO story_cards
+                   (id, rp_folder, file_path, card_type, name, importance, frontmatter, indexed_at)
+               VALUES (?, ?, ?, 'character', ?, 'main', '{}', '2026-01-01T00:00:00')""",
+            [f"{RP}:newguy", RP, "Story Cards/Characters/NewGuy.md", "NewGuy"],
+            priority=PRIORITY_ANALYSIS,
+        )
+        await future
+
         sm = _make_state_manager(db)
         from rp_engine.models.state import CharacterUpdate
 
@@ -172,6 +210,21 @@ class TestCharacterState:
         fetched = await sm.get_character("NewGuy", RP, BRANCH)
         assert fetched is not None
         assert fetched.location == "docks"
+
+    @pytest.mark.asyncio
+    async def test_update_character_no_card_returns_empty(self, db):
+        """Updating a character without a story card returns an empty detail."""
+        sm = _make_state_manager(db)
+        from rp_engine.models.state import CharacterUpdate
+
+        result = await sm.update_character(
+            "NoCard",
+            CharacterUpdate(location="nowhere"),
+            RP,
+            BRANCH,
+        )
+        assert result.name == "NoCard"
+        assert result.location is None  # no card = no state stored
 
     @pytest.mark.asyncio
     async def test_update_character_partial(self, db):
@@ -257,7 +310,8 @@ class TestTrustManagement:
     async def test_session_cap_gain(self, db):
         """Hitting session_max_gain should prevent further increases."""
         config = TrustConfig(session_max_gain=5)
-        sm = StateManager(db=db, config=config)
+        resolver = AncestryResolver(db)
+        sm = StateManager(db=db, config=config, resolver=resolver)
 
         # First change: +5 (hits cap exactly)
         rel = await sm.update_trust("Dante", "Lilith", 5, "positive", "Big help", RP, BRANCH)
@@ -271,7 +325,8 @@ class TestTrustManagement:
     async def test_session_cap_loss(self, db):
         """Hitting session_max_loss should prevent further decreases."""
         config = TrustConfig(session_max_loss=-5)
-        sm = StateManager(db=db, config=config)
+        resolver = AncestryResolver(db)
+        sm = StateManager(db=db, config=config, resolver=resolver)
 
         # Give initial trust to have room to lose
         await _insert_relationship(db, "Dante", "Lilith", initial_trust=20)
@@ -288,7 +343,8 @@ class TestTrustManagement:
     async def test_score_clamped_to_bounds(self, db):
         """Trust score should not exceed min_score/max_score."""
         config = TrustConfig(min_score=-50, max_score=50)
-        sm = StateManager(db=db, config=config)
+        resolver = AncestryResolver(db)
+        sm = StateManager(db=db, config=config, resolver=resolver)
 
         # Start at 45, try to add 10 -> clamped to 50
         await _insert_relationship(db, "Dante", "Lilith", initial_trust=45)
@@ -302,22 +358,15 @@ class TestTrustManagement:
         # Build some session trust
         await sm.update_trust("Dante", "Lilith", 5, "positive", "Help", RP, BRANCH)
 
-        # Verify session caps are set
-        row = await db.fetch_one(
-            "SELECT session_trust_gained FROM relationships WHERE rp_folder = ? AND branch = ?",
-            [RP, BRANCH],
-        )
-        assert row["session_trust_gained"] == 5
+        # Verify in-memory session caps are set
+        cap_key = ("dante", "lilith", RP, BRANCH)
+        assert sm._session_trust_caps[cap_key]["gained"] == 5
 
         # Reset
         await sm.reset_session_caps(RP, BRANCH)
 
-        row = await db.fetch_one(
-            "SELECT session_trust_gained, session_trust_lost FROM relationships WHERE rp_folder = ? AND branch = ?",
-            [RP, BRANCH],
-        )
-        assert row["session_trust_gained"] == 0
-        assert row["session_trust_lost"] == 0
+        # In-memory caps should be cleared
+        assert cap_key not in sm._session_trust_caps
 
     @pytest.mark.asyncio
     async def test_get_relationship_with_history(self, db):
@@ -475,6 +524,9 @@ class TestFullState:
     async def test_full_state_snapshot(self, db):
         sm = _make_state_manager(db)
         from rp_engine.models.state import CharacterUpdate, SceneUpdate
+
+        # Insert a story card for Dante so update_character works
+        await _insert_character(db, "Dante")
 
         # Populate data
         await sm.update_character("Dante", CharacterUpdate(location="warehouse"), RP, BRANCH)

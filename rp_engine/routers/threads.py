@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -68,10 +69,11 @@ async def update_counter(
     if not thread:
         raise HTTPException(404, detail=f"Thread '{thread_id}' not found")
 
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from rp_engine.database import PRIORITY_ANALYSIS
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await tracker.db.enqueue_write(
         """INSERT INTO thread_counters (thread_id, rp_folder, branch, current_counter, updated_at)
            VALUES (?, ?, ?, ?, ?)

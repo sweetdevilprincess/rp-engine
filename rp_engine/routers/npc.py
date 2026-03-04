@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from rp_engine.config import get_config
 from rp_engine.dependencies import get_npc_engine
 from rp_engine.models.npc import (
     NPCBatchRequest,
     NPCListItem,
-    NPCReactRequest,
     NPCReaction,
+    NPCReactRequest,
     TrustInfo,
 )
 
@@ -27,8 +27,8 @@ def _get_npc_intelligence(request: Request):
 
 class FeedbackBody(BaseModel):
     original_output: str
-    user_feedback: Optional[str] = None
-    user_rewrite: Optional[str] = None
+    user_feedback: str | None = None
+    user_rewrite: str | None = None
     accepted: bool = True
 
 router = APIRouter(tags=["npc"])
@@ -42,17 +42,18 @@ async def react(
     npc_engine=Depends(get_npc_engine),
 ):
     """Get a single NPC's reaction to a scene moment."""
+    pov = body.pov_character or get_config().rp.default_pov_character
     try:
         return await npc_engine.get_reaction(
             npc_name=body.npc_name,
             scene_prompt=body.scene_prompt,
-            pov_character=body.pov_character,
+            pov_character=pov,
             rp_folder=rp_folder,
             branch=branch,
             model_override=body.model_override,
         )
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from None
 
 
 @router.post("/api/npc/react-batch", response_model=list[NPCReaction])
@@ -63,10 +64,11 @@ async def react_batch(
     npc_engine=Depends(get_npc_engine),
 ):
     """Get reactions from multiple NPCs in parallel."""
+    pov = body.pov_character or get_config().rp.default_pov_character
     return await npc_engine.get_batch_reactions(
         npc_names=body.npc_names,
         scene_prompt=body.scene_prompt,
-        pov_character=body.pov_character,
+        pov_character=pov,
         rp_folder=rp_folder,
         branch=branch,
     )
@@ -77,13 +79,14 @@ async def get_trust(
     name: str,
     rp_folder: str = Query(...),
     branch: str = Query("main"),
-    target_name: str = Query("Lilith"),
+    target_name: str | None = Query(None),
     npc_engine=Depends(get_npc_engine),
 ):
     """Check the current trust level between an NPC and a target character."""
+    target = target_name or get_config().rp.default_pov_character
     return await npc_engine.get_trust(
         npc_name=name,
-        target=target_name,
+        target=target,
         rp_folder=rp_folder,
         branch=branch,
     )
@@ -93,14 +96,15 @@ async def get_trust(
 async def list_npcs(
     rp_folder: str = Query(...),
     branch: str = Query("main"),
-    pov_character: str = Query("Lilith"),
+    pov_character: str | None = Query(None),
     npc_engine=Depends(get_npc_engine),
 ):
     """List all available NPCs in an RP with their state."""
+    pov = pov_character or get_config().rp.default_pov_character
     return await npc_engine.list_npcs(
         rp_folder=rp_folder,
         branch=branch,
-        pov_character=pov_character,
+        pov_character=pov,
     )
 
 
@@ -119,7 +123,7 @@ async def intelligence_stats(
 
 @router.get("/api/npc/intelligence/patterns")
 async def intelligence_patterns(
-    category: Optional[str] = Query(None),
+    category: str | None = Query(None),
     npc_intelligence=Depends(_get_npc_intelligence),
 ):
     """List behavioral patterns, optionally filtered by category."""

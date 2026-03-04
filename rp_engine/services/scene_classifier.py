@@ -224,10 +224,18 @@ class SceneClassifier:
         """Boost signals based on character conditions, emotions, scene mood."""
         result = dict(scores)
 
-        # Character conditions + emotional states
+        # Character conditions + emotional states from CoW table
         chars = await self.db.fetch_all(
-            "SELECT conditions, emotional_state FROM characters WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, branch],
+            """SELECT cse.conditions, cse.emotional_state
+               FROM character_state_entries cse
+               INNER JOIN (
+                   SELECT card_id, MAX(exchange_number) as max_ex
+                   FROM character_state_entries
+                   WHERE rp_folder = ? AND branch = ?
+                   GROUP BY card_id
+               ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
+               WHERE cse.rp_folder = ? AND cse.branch = ?""",
+            [rp_folder, branch, rp_folder, branch],
         )
         for char in chars:
             # Parse conditions JSON array
@@ -250,9 +258,11 @@ class SceneClassifier:
                     if emo_val in emotional_lower:
                         result[signal] = result.get(signal, 0) + boost
 
-        # Scene mood
+        # Scene mood from CoW table
         scene = await self.db.fetch_one(
-            "SELECT mood FROM scene_context WHERE rp_folder = ? AND branch = ?",
+            """SELECT mood FROM scene_state_entries
+               WHERE rp_folder = ? AND branch = ?
+               ORDER BY exchange_number DESC LIMIT 1""",
             [rp_folder, branch],
         )
         if scene and scene.get("mood"):

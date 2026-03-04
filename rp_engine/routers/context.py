@@ -93,15 +93,28 @@ async def get_continuity(
     db=Depends(get_db),
 ):
     """Data-only continuity brief (Phase 2 — no LLM synthesis)."""
-    # Scene
+    # Scene from CoW table
     scene = await db.fetch_one(
-        "SELECT location, time_of_day, mood, in_story_timestamp FROM scene_context WHERE rp_folder = ? AND branch = ?",
+        """SELECT location, time_of_day, mood, in_story_timestamp
+           FROM scene_state_entries WHERE rp_folder = ? AND branch = ?
+           ORDER BY exchange_number DESC LIMIT 1""",
         [rp_folder, branch],
     )
 
-    # Characters
+    # Characters from CoW tables (join ledger -> story_cards -> state_entries)
     characters = await db.fetch_all(
-        "SELECT name, location, emotional_state, conditions FROM characters WHERE rp_folder = ? AND branch = ?",
+        """SELECT sc.name,
+                  cse.location, cse.emotional_state, cse.conditions
+           FROM character_ledger cl
+           JOIN story_cards sc ON cl.card_id = sc.id
+           LEFT JOIN character_state_entries cse ON (
+               cse.card_id = cl.card_id AND cse.rp_folder = cl.rp_folder AND cse.branch = cl.branch
+               AND cse.exchange_number = (
+                   SELECT MAX(exchange_number) FROM character_state_entries
+                   WHERE card_id = cl.card_id AND rp_folder = cl.rp_folder AND branch = cl.branch
+               )
+           )
+           WHERE cl.rp_folder = ? AND cl.branch = ? AND cl.status = 'active'""",
         [rp_folder, branch],
     )
 

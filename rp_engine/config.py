@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 3000
+    cors_origins: list[str] = ["http://localhost:*", "http://127.0.0.1:*"]
 
 
 class PathsConfig(BaseModel):
@@ -62,6 +63,10 @@ class TrustConfig(BaseModel):
     max_score: int = 50
 
 
+class RPConfig(BaseModel):
+    default_pov_character: str = "Lilith"
+
+
 class RPEngineConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="RP_ENGINE_",
@@ -76,6 +81,7 @@ class RPEngineConfig(BaseSettings):
     context: ContextConfig = ContextConfig()
     search: SearchConfig = SearchConfig()
     trust: TrustConfig = TrustConfig()
+    rp: RPConfig = RPConfig()
 
     # Standalone field — picks up OPENROUTER_API_KEY env var (no prefix)
     openrouter_api_key: str = ""

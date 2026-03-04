@@ -15,11 +15,9 @@ This is idempotent — running it multiple times won't create duplicates (uses I
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +39,7 @@ async def migrate(db_path: str = "data/rp-engine.db") -> dict:
     }
 
     try:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # 1. characters -> character_ledger + character_state_entries
         logger.info("Migrating characters...")
@@ -182,7 +180,7 @@ def main():
 
     logger.info("Starting data migration from: %s", db_path)
     counts = asyncio.run(migrate(db_path))
-    print(f"\nMigration complete:")
+    print("\nMigration complete:")
     for table, count in counts.items():
         print(f"  {table}: {count} records")
 

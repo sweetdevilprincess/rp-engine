@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from rp_engine.database import Database, PRIORITY_EXCHANGE
+from rp_engine.database import PRIORITY_EXCHANGE, Database
 from rp_engine.dependencies import get_db
 from rp_engine.models.session import (
     NewEntity,
@@ -57,7 +57,7 @@ async def create_session(
         await branch_manager.ensure_main_branch(body.rp_folder)
 
     session_id = uuid4().hex[:12]
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     future = await db.enqueue_write(
         """INSERT INTO sessions (id, rp_folder, branch, started_at)
@@ -121,7 +121,7 @@ async def end_session(
     if row["ended_at"]:
         raise HTTPException(400, detail="Session already ended")
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     future = await db.enqueue_write(
         "UPDATE sessions SET ended_at = ? WHERE id = ?",
         [now, session_id],

@@ -180,6 +180,40 @@ triggers:
 Knowledge about Dante's daily routine.
 """
 
+SAMPLE_PLOT_ARC_MD = """---
+type: plot_arc
+card_id: lilith_infiltration_arc
+name: "Lilith's Infiltration"
+rp: Mafia
+category: main_plot
+priority: critical
+status: active
+phase: rising_action
+key_characters:
+  Dante Moretti: protagonist
+  Lilith Graves: catalyst
+key_locations:
+  - Dante's Penthouse
+related_arcs: []
+related_memories:
+  - lilith wakes to find dante still holding her
+related_secrets:
+  - lilith is terrified dante will abandon her
+related_threads:
+  - dante_lilith_tension
+beats_completed:
+  - "Lilith gains entry to the penthouse"
+beats_remaining:
+  - "Dante discovers Lilith's true identity"
+next_milestone: "The reveal"
+tags: [main-plot, infiltration]
+triggers:
+  - lilith infiltration
+---
+
+The main arc tracking Lilith's undercover operation within the Moretti family.
+"""
+
 SAMPLE_GUIDELINES_MD = """---
 pov_mode: dual
 pov_character: ""
@@ -293,6 +327,13 @@ def sample_card_dir(tmp_path: Path) -> Path:
     knowledge.mkdir(parents=True)
     (knowledge / "Dante's Daily Schedule.md").write_text(
         SAMPLE_KNOWLEDGE_MD, encoding="utf-8"
+    )
+
+    # Plot Arcs
+    arcs = rp / "Plot Arcs"
+    arcs.mkdir(parents=True)
+    (arcs / "Lilith's Infiltration.md").write_text(
+        SAMPLE_PLOT_ARC_MD, encoding="utf-8"
     )
 
     # RP State with guidelines

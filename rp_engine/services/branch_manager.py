@@ -9,7 +9,7 @@ Uses copy-on-write branching:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rp_engine.database import PRIORITY_EXCHANGE, Database
 from rp_engine.models.branch import (
@@ -37,7 +37,7 @@ class BranchManager:
 
     async def ensure_main_branch(self, rp_folder: str) -> None:
         """Create the 'main' branch for an RP folder if it doesn't exist."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         future = await self.db.enqueue_write(
             """INSERT OR IGNORE INTO branches (name, rp_folder, is_active, created_at)
                VALUES ('main', ?, TRUE, ?)""",
@@ -127,7 +127,7 @@ class BranchManager:
         State (characters, scenes, events) is NOT copied — it's resolved
         lazily through the ancestry graph.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # 1. Resolve source branch
         source = branch_from or await self.get_active_branch(rp_folder)
@@ -338,7 +338,7 @@ class BranchManager:
         self, name: str, rp_folder: str, branch: str, description: str | None = None
     ) -> CheckpointInfo:
         """Create a named checkpoint at the current exchange number."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         latest = await self.db.fetch_val(
             "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
@@ -417,7 +417,7 @@ class BranchManager:
             counter += 1
             new_branch_name = f"{branch}-rewind-{target_exchange}-{counter}"
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # Create new branch from the checkpoint's exchange point
         future = await self.db.enqueue_write(

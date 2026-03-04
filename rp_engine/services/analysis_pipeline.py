@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rp_engine.config import TrustConfig
 from rp_engine.database import PRIORITY_ANALYSIS, Database
@@ -238,8 +238,23 @@ class AnalysisPipeline:
             )
             result.events_added += 1
 
+        # 6b. Store extracted memories
+        for mem in analysis.memories:
+            if mem.description:
+                await self.db.enqueue_write(
+                    """INSERT INTO extracted_memories
+                       (rp_folder, branch, exchange_id, session_id, description,
+                        significance, characters, in_story_timestamp, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    [rp_folder, branch, exchange_id, exchange.get("session_id"),
+                     mem.description, mem.significance,
+                     json.dumps(mem.characters), mem.timestamp],
+                    priority=PRIORITY_ANALYSIS,
+                )
+                result.events_added += 1
+
         # 7. Record new entities in card_gaps
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         for char in analysis.new_entities.characters:
             if char.name:
                 await self._upsert_card_gap(char.name, "character", rp_folder, now)

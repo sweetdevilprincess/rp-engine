@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from rp_engine.database import Database
 from rp_engine.models.trigger import ConditionResult, TriggerTestResult
+from rp_engine.utils.json_helpers import safe_parse_json_array
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,11 @@ _EXPR_PATTERN = re.compile(
 )
 # Parse quoted string arguments
 _ARG_PATTERN = re.compile(r'"([^"]*)"')
+
+# Allowlists for dynamic column selection in _eval_state
+_VALID_CHAR_FIELDS = {"location", "conditions", "emotional_state", "last_seen"}
+_VALID_REL_FIELDS = {"initial_trust_score", "trust_modification_sum", "dynamic", "trust_stage"}
+_VALID_SCENE_FIELDS = {"location", "time_of_day", "mood", "in_story_timestamp"}
 
 
 @dataclass
@@ -74,13 +80,9 @@ class TriggerEvaluator:
                     continue
 
             # Parse conditions JSON
-            try:
-                conditions = json.loads(row["conditions"]) if isinstance(row["conditions"], str) else row["conditions"]
-            except (json.JSONDecodeError, TypeError):
+            conditions = safe_parse_json_array(row.get("conditions"))
+            if not conditions:
                 logger.warning("Invalid conditions JSON for trigger %s", row["id"])
-                continue
-
-            if not isinstance(conditions, list):
                 continue
 
             # Evaluate conditions
@@ -152,10 +154,7 @@ class TriggerEvaluator:
         rp = rp_folder or row.get("rp_folder", "")
         match_mode = row.get("match_mode", "any")
 
-        try:
-            conditions = json.loads(row["conditions"]) if isinstance(row["conditions"], str) else row["conditions"]
-        except (json.JSONDecodeError, TypeError):
-            conditions = []
+        conditions = safe_parse_json_array(row.get("conditions"))
 
         results: list[ConditionResult] = []
         for i, cond in enumerate(conditions):
@@ -295,7 +294,7 @@ class TriggerEvaluator:
             idx1 = text_lower.find(w1)
             idx2 = text_lower.find(w2)
             if idx1 == -1 or idx2 == -1:
-                return False, f"seq() word not found"
+                return False, "seq() word not found"
             if idx1 < idx2:
                 return True, f"seq('{w1}','{w2}'): {idx1} < {idx2}"
             return False, f"seq('{w1}','{w2}'): {idx1} >= {idx2}"
@@ -326,12 +325,24 @@ class TriggerEvaluator:
         if parts[0] == "characters" and len(parts) >= 3:
             name = parts[1]
             field_name = parts[2]
+            if field_name not in _VALID_CHAR_FIELDS:
+                logger.warning("Invalid character field in trigger condition: %s", field_name)
+                return False, f"Invalid character field: {field_name}"
+            # Look up card_id from story_cards, then query character_state_entries
+            card_id = await self.db.fetch_val(
+                "SELECT id FROM story_cards WHERE LOWER(name) = ? AND rp_folder = ?",
+                [name.lower(), rp_folder],
+            )
+            if not card_id:
+                return False, f"Character '{name}' not found"
             row = await self.db.fetch_one(
-                f"SELECT {field_name} FROM characters WHERE LOWER(name) = ? AND rp_folder = ? AND branch = ?",
-                [name.lower(), rp_folder, branch],
+                f"""SELECT {field_name} FROM character_state_entries
+                    WHERE card_id = ? AND rp_folder = ? AND branch = ?
+                    ORDER BY exchange_number DESC LIMIT 1""",
+                [card_id, rp_folder, branch],
             )
             if not row:
-                return False, f"Character '{name}' not found"
+                return False, f"Character '{name}' has no state"
 
             db_val = row.get(field_name)
             return self._compare_state_value(db_val, operator, value, values, field_name)
@@ -345,16 +356,27 @@ class TriggerEvaluator:
             char_a, char_b = rel_part.split("->", 1)
 
             if field_name == "trust_score":
-                row = await self.db.fetch_one(
-                    """SELECT initial_trust_score + trust_modification_sum as trust_score
-                       FROM relationships
+                baseline = await self.db.fetch_val(
+                    """SELECT baseline_score FROM trust_baselines
                        WHERE LOWER(character_a) = ? AND LOWER(character_b) = ?
                          AND rp_folder = ? AND branch = ?""",
                     [char_a.lower(), char_b.lower(), rp_folder, branch],
                 )
+                mod_sum = await self.db.fetch_val(
+                    """SELECT COALESCE(SUM(change), 0) FROM trust_modifications
+                       WHERE LOWER(character_a) = ? AND LOWER(character_b) = ?
+                         AND rp_folder = ? AND branch = ?""",
+                    [char_a.lower(), char_b.lower(), rp_folder, branch],
+                )
+                db_val = (baseline or 0) + (mod_sum or 0)
+                return self._compare_state_value(db_val, operator, value, values, field_name)
             else:
+                if field_name not in _VALID_REL_FIELDS:
+                    logger.warning("Invalid relationship field in trigger condition: %s", field_name)
+                    return False, f"Invalid relationship field: {field_name}"
+                # For non-trust_score relationship fields, check trust_baselines
                 row = await self.db.fetch_one(
-                    f"""SELECT {field_name} FROM relationships
+                    f"""SELECT {field_name} FROM trust_baselines
                         WHERE LOWER(character_a) = ? AND LOWER(character_b) = ?
                           AND rp_folder = ? AND branch = ?""",
                     [char_a.lower(), char_b.lower(), rp_folder, branch],
@@ -363,13 +385,18 @@ class TriggerEvaluator:
             if not row:
                 return False, f"Relationship '{char_a}->{char_b}' not found"
 
-            db_val = row.get(field_name if field_name != "trust_score" else "trust_score")
+            db_val = row.get(field_name)
             return self._compare_state_value(db_val, operator, value, values, field_name)
 
         elif parts[0] == "scene" and len(parts) >= 2:
             field_name = parts[1]
+            if field_name not in _VALID_SCENE_FIELDS:
+                logger.warning("Invalid scene field in trigger condition: %s", field_name)
+                return False, f"Invalid scene field: {field_name}"
             row = await self.db.fetch_one(
-                f"SELECT {field_name} FROM scene_context WHERE rp_folder = ? AND branch = ?",
+                f"""SELECT {field_name} FROM scene_state_entries
+                    WHERE rp_folder = ? AND branch = ?
+                    ORDER BY exchange_number DESC LIMIT 1""",
                 [rp_folder, branch],
             )
             if not row:

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
 from rp_engine.config import TrustConfig
+from rp_engine.database import PRIORITY_ANALYSIS
 from rp_engine.dependencies import get_db, get_state_manager
+from rp_engine.services.ancestry_resolver import AncestryResolver
 from rp_engine.services.state_manager import StateManager
 from tests.conftest import create_test_app
 
@@ -14,13 +18,27 @@ from tests.conftest import create_test_app
 @pytest.fixture
 def app(db):
     test_app = create_test_app()
-    sm = StateManager(db=db, config=TrustConfig())
+    resolver = AncestryResolver(db)
+    sm = StateManager(db=db, config=TrustConfig(), resolver=resolver)
     test_app.dependency_overrides[get_db] = lambda: db
     test_app.dependency_overrides[get_state_manager] = lambda: sm
     return test_app
 
 
 RP = "Mafia"
+
+
+async def _seed_story_card(db, name, rp_folder=RP):
+    """Insert a minimal story card so character operations work."""
+    card_id = f"{rp_folder}:{name.lower()}"
+    future = await db.enqueue_write(
+        """INSERT OR IGNORE INTO story_cards
+               (id, rp_folder, file_path, card_type, name, importance, frontmatter, indexed_at)
+           VALUES (?, ?, ?, 'character', ?, 'main', '{}', '2026-01-01T00:00:00')""",
+        [card_id, rp_folder, f"Story Cards/Characters/{name}.md", name],
+        priority=PRIORITY_ANALYSIS,
+    )
+    await future
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +58,8 @@ class TestCharacterEndpoints:
             resp = await c.get("/api/state/characters/Nobody", params={"rp_folder": RP})
         assert resp.status_code == 404
 
-    async def test_update_and_get_character(self, app):
+    async def test_update_and_get_character(self, app, db):
+        await _seed_story_card(db, "Dante")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
             # PUT to create
             resp = await c.put(
@@ -59,7 +78,9 @@ class TestCharacterEndpoints:
             assert resp.status_code == 200
             assert resp.json()["location"] == "warehouse"
 
-    async def test_get_characters_location_filter(self, app):
+    async def test_get_characters_location_filter(self, app, db):
+        await _seed_story_card(db, "Dante")
+        await _seed_story_card(db, "Lilith")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
             await c.put(
                 "/api/state/characters/Dante",
@@ -205,7 +226,8 @@ class TestEventEndpoints:
 
 
 class TestStateSnapshot:
-    async def test_full_state(self, app):
+    async def test_full_state(self, app, db):
+        await _seed_story_card(db, "Dante")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
             # Populate some data
             await c.put(

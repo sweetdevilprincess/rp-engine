@@ -14,7 +14,7 @@ import logging
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -100,13 +100,8 @@ class VectorSearch:
                 [row_id],
             )
             if row:
-                meta = {}
-                if row.get("metadata"):
-                    import json
-                    try:
-                        meta = json.loads(row["metadata"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                from rp_engine.utils.json_helpers import safe_parse_json
+                meta = safe_parse_json(row.get("metadata"))
                 results.append(SearchResult(
                     content=row["content"],
                     file_path=row.get("file_path"),
@@ -145,7 +140,7 @@ class VectorSearch:
 
         import json
         meta_json = json.dumps(metadata) if metadata else None
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         for i, chunk in enumerate(chunks):
             if embeddings and i < len(embeddings):

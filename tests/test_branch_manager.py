@@ -44,6 +44,19 @@ async def _create_exchange(db: Database, rp_folder: str = "TestRP", branch: str 
     return await future
 
 
+async def _seed_story_card(db: Database, name: str, rp_folder: str = "TestRP"):
+    """Insert a minimal story card for character tests."""
+    card_id = f"{rp_folder}:{name.lower()}"
+    future = await db.enqueue_write(
+        """INSERT OR IGNORE INTO story_cards
+               (id, rp_folder, file_path, card_type, name, importance, frontmatter, indexed_at)
+           VALUES (?, ?, ?, 'character', ?, 'main', '{}', '2026-01-01T00:00:00')""",
+        [card_id, rp_folder, f"Story Cards/Characters/{name}.md", name],
+        priority=PRIORITY_EXCHANGE,
+    )
+    await future
+
+
 async def _seed_state(
     db: Database,
     state_manager: StateManager,
@@ -55,6 +68,9 @@ async def _seed_state(
     await branch_manager.ensure_main_branch(rp_folder)
     sid = await _create_session(db, rp_folder, branch)
     eid = await _create_exchange(db, rp_folder, branch, sid, exchange_number=1)
+
+    # Story card (required for character state)
+    await _seed_story_card(db, "Dante", rp_folder)
 
     # Character
     await state_manager.update_character(

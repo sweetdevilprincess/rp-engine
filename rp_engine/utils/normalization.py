@@ -43,3 +43,45 @@ def strip_parenthetical(name: str) -> str:
     if not name:
         return ""
     return re.sub(r"\s*\([^)]*\)\s*$", "", str(name)).strip()
+
+
+# ---------------------------------------------------------------------------
+# Card ID generation
+# ---------------------------------------------------------------------------
+
+CARD_TYPE_PREFIX: dict[str, str] = {
+    "character": "char",
+    "npc": "char",  # NPCs are characters
+    "location": "loc",
+    "memory": "mem",
+    "secret": "sec",
+    "knowledge": "know",
+    "organization": "org",
+    "plot_thread": "thread",
+    "plot_arc": "arc",
+    "item": "item",
+    "lore": "lore",
+    "chapter_summary": "ch",
+}
+
+
+def slugify(text: str) -> str:
+    """Convert text to a snake_case slug.
+
+    Example: ``'Dante Moretti'`` → ``'dante_moretti'``
+    """
+    s = str(text).lower().strip()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"[-\s]+", "_", s)
+    s = re.sub(r"_+", "_", s)
+    return s.strip("_")
+
+
+def generate_card_id(card_type: str, name: str) -> str:
+    """Generate a prefixed card_id from type and name.
+
+    Example: ``('memory', 'First Kiss')`` → ``'mem_first_kiss'``
+    """
+    prefix = CARD_TYPE_PREFIX.get(card_type, card_type)
+    slug = slugify(name)
+    return f"{prefix}_{slug}"

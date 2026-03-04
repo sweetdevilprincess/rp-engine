@@ -20,7 +20,6 @@ import asyncio
 import json
 import os
 import sys
-from pathlib import Path
 
 if sys.platform == "win32" and sys.version_info < (3, 16):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -628,7 +627,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     except httpx.ConnectError:
         return [TextContent(type="text", text=f"Connection error: could not reach rp-engine at {API_URL}. Is the server running?")]
     except Exception as e:
-        return [TextContent(type="text", text=f"Error: {str(e)}")]
+        return [TextContent(type="text", text=f"Error: {e!s}")]
 
 
 # ---------------------------------------------------------------------------

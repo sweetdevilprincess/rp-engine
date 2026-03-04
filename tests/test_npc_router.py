@@ -28,13 +28,21 @@ from tests.conftest import MockLLMClient, create_test_app
 # ---------------------------------------------------------------------------
 
 async def _insert_character(db, name: str, rp_folder: str = "TestRP", branch: str = "main"):
-    char_id = f"{rp_folder}:{branch}:{name.lower()}"
+    """Insert a character as story_card + ledger + state entry."""
+    card_id = f"{rp_folder}:{name.lower()}"
+    fm = json.dumps({"primary_archetype": "POWER_HOLDER", "is_player_character": False})
     future = await db.enqueue_write(
-        """INSERT OR REPLACE INTO characters
-           (id, rp_folder, branch, name, importance, primary_archetype, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        [char_id, rp_folder, branch, name, "main", "POWER_HOLDER",
-         datetime.now(timezone.utc).isoformat()],
+        """INSERT OR REPLACE INTO story_cards
+           (id, rp_folder, file_path, card_type, name, importance, frontmatter, indexed_at)
+           VALUES (?, ?, ?, 'character', ?, 'main', ?, '2026-01-01T00:00:00')""",
+        [card_id, rp_folder, f"Story Cards/Characters/{name}.md", name, fm],
+    )
+    await future
+    future = await db.enqueue_write(
+        """INSERT OR IGNORE INTO character_ledger
+           (card_id, rp_folder, branch, status, activated_at_exchange, created_at)
+           VALUES (?, ?, ?, 'active', 0, '2026-01-01T00:00:00')""",
+        [card_id, rp_folder, branch],
     )
     await future
 

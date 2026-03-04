@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from rp_engine.database import Database, PRIORITY_REINDEX
+from rp_engine.database import PRIORITY_REINDEX, Database
 from rp_engine.utils.frontmatter import parse_file
 from rp_engine.utils.normalization import (
     file_to_key,
@@ -35,6 +35,8 @@ CARD_TYPE_DIRS: dict[str, str] = {
     "plot_thread": "Plot Threads",
     "item": "Items",
     "lore": "Lore",
+    "plot_arc": "Plot Arcs",
+    "chapter_summary": "Chapters",
 }
 
 # Reverse: directory name → card type
@@ -46,6 +48,7 @@ CONNECTION_RULES: list[tuple[str, str, str]] = [
     ("character", "memories", "has_memory"),
     ("character", "knowledge_refs", "has_knowledge"),
     ("character", "relationships", "has_relationship"),
+    ("character", "initial_relationships", "has_relationship"),
     ("character", "npc_trust_levels", "trusts"),
     # Memories
     ("memory", "belongs_to", "belongs_to"),
@@ -70,12 +73,28 @@ CONNECTION_RULES: list[tuple[str, str, str]] = [
     ("plot_thread", "related_threads", "related_thread"),
     ("plot_thread", "related_characters", "involves_character"),
     ("plot_thread", "related_locations", "involves_location"),
+    ("plot_thread", "related_arcs", "related_arc"),
+    # Plot arcs
+    ("plot_arc", "key_characters", "involves_character"),
+    ("plot_arc", "key_locations", "involves_location"),
+    ("plot_arc", "related_arcs", "related_arc"),
+    ("plot_arc", "related_memories", "involves_memory"),
+    ("plot_arc", "related_secrets", "involves_secret"),
+    ("plot_arc", "related_threads", "related_thread"),
     # Knowledge
     ("knowledge", "belongs_to", "belongs_to"),
     ("knowledge", "related_to", "related_to"),
     # Items
     ("item", "current_holder", "held_by"),
     ("item", "known_by", "known_by"),
+    # Chapter summaries
+    ("chapter_summary", "pov_characters", "involves_character"),
+    ("chapter_summary", "npcs_featured", "involves_character"),
+    ("chapter_summary", "new_characters_introduced", "introduces_character"),
+    ("chapter_summary", "locations", "involves_location"),
+    ("chapter_summary", "threads_active", "related_thread"),
+    ("chapter_summary", "threads_resolved", "resolved_thread"),
+    ("chapter_summary", "threads_introduced", "introduced_thread"),
 ]
 
 
@@ -109,6 +128,12 @@ class CardIndexer:
         alias_map: dict[str, str] = {}  # alias → entity_id
 
         md_files = list(story_cards_dir.rglob("*.md"))
+
+        # Also scan top-level Chapters directory
+        chapters_dir = self.vault_root / rp_folder / "Chapters"
+        if chapters_dir.is_dir():
+            md_files.extend(chapters_dir.rglob("*.md"))
+
         for file_path in md_files:
             frontmatter, body = parse_file(file_path)
             if frontmatter is None:
@@ -147,7 +172,7 @@ class CardIndexer:
         # Insert entities into DB
         import json
 
-        for eid, data in entities.items():
+        for _eid, data in entities.items():
             future = await self.db.enqueue_write(
                 """INSERT OR REPLACE INTO story_cards
                    (id, rp_folder, file_path, card_type, name, importance, summary,
@@ -175,7 +200,6 @@ class CardIndexer:
             alias_count += 1
 
         # Insert keywords
-        known_entities = set(entities.keys())
         keyword_count = 0
         for eid, data in entities.items():
             keywords = self._extract_keywords(eid, data["frontmatter"])
@@ -228,10 +252,10 @@ class CardIndexer:
 
     async def index_file(self, rp_folder: str, file_path: Path) -> bool:
         """Incrementally index a single file. Returns True if indexed."""
-        if not file_path.exists() or not file_path.suffix == ".md":
+        if not file_path.exists() or file_path.suffix != ".md":
             return False
 
-        frontmatter, body = parse_file(file_path)
+        frontmatter, _body = parse_file(file_path)
         if frontmatter is None:
             return False
 
@@ -347,6 +371,8 @@ class CardIndexer:
             # Normalize common variants
             if t in ("plot_thread", "thread"):
                 return "plot_thread"
+            if t in ("plot_arc", "plot"):
+                return "plot_arc"
             if t in CARD_TYPE_DIRS:
                 return t
             # Check if it's a character in the NPCs directory
@@ -373,8 +399,8 @@ class CardIndexer:
             if val:
                 return str(val).strip()
 
-        # ID fields
-        for field in ("memory_id", "secret_id", "knowledge_id", "thread_id"):
+        # card_id + legacy typed IDs
+        for field in ("card_id", "memory_id", "secret_id", "knowledge_id", "thread_id"):
             val = frontmatter.get(field)
             if val:
                 return str(val).strip()
@@ -416,7 +442,7 @@ class CardIndexer:
                 continue
 
             # Special handling per field type
-            if rule_field == "relationships":
+            if rule_field in ("relationships", "initial_relationships"):
                 connections.extend(
                     self._parse_relationships(entity_id, value, entity_keys, alias_map, rp_folder)
                 )
@@ -435,6 +461,18 @@ class CardIndexer:
             elif rule_field == "regular_occupants":
                 connections.extend(
                     self._parse_occupants(entity_id, value, conn_type, entity_keys, alias_map, rp_folder)
+                )
+            elif rule_field == "key_characters":
+                connections.extend(
+                    self._parse_arc_characters(
+                        entity_id, value, conn_type, entity_keys, alias_map, rp_folder
+                    )
+                )
+            elif rule_field == "related_arcs":
+                connections.extend(
+                    self._parse_related_arcs(
+                        entity_id, value, conn_type, entity_keys, alias_map, rp_folder
+                    )
                 )
             elif isinstance(value, list):
                 for item in value:
@@ -479,7 +517,7 @@ class CardIndexer:
         if isinstance(value, list):
             for item in value:
                 if isinstance(item, dict):
-                    name = item.get("name", "")
+                    name = item.get("target") or item.get("name", "")
                     role = item.get("role") or item.get("type")
                     if name:
                         target = self._resolve_ref(str(name), entity_keys, alias_map, rp_folder)
@@ -605,6 +643,55 @@ class CardIndexer:
                 })
         return conns
 
+    def _parse_arc_characters(
+        self, entity_id: str, value: Any, conn_type: str,
+        entity_keys: dict, alias_map: dict, rp_folder: str,
+    ) -> list[dict]:
+        """Parse key_characters dict: {name_or_card_id: role}.
+
+        Example: {Dante Moretti: protagonist, Lilith Graves: catalyst}
+        """
+        conns = []
+        if isinstance(value, dict):
+            for name, role in value.items():
+                target = self._resolve_ref(str(name), entity_keys, alias_map, rp_folder)
+                conns.append({
+                    "from": entity_id, "to": target,
+                    "type": conn_type,
+                    "field": "key_characters",
+                    "role": str(role) if role else None,
+                })
+        return conns
+
+    def _parse_related_arcs(
+        self, entity_id: str, value: Any, conn_type: str,
+        entity_keys: dict, alias_map: dict, rp_folder: str,
+    ) -> list[dict]:
+        """Parse related_arcs — list of dicts with card_id + relationship.
+
+        Example: [{card_id: dante_redemption_arc, relationship: parallel}]
+        """
+        conns = []
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    ref = item.get("card_id", item.get("name", ""))
+                    role = item.get("relationship")
+                elif isinstance(item, str):
+                    ref = item
+                    role = None
+                else:
+                    continue
+                if ref:
+                    target = self._resolve_ref(str(ref), entity_keys, alias_map, rp_folder)
+                    conns.append({
+                        "from": entity_id, "to": target,
+                        "type": conn_type,
+                        "field": "related_arcs",
+                        "role": str(role) if role else None,
+                    })
+        return conns
+
     # ------------------------------------------------------------------
     # Internal: Alias / keyword extraction
     # ------------------------------------------------------------------
@@ -623,8 +710,8 @@ class CardIndexer:
                 if key:
                     aliases.append(key)
 
-        # ID fields
-        for field in ("memory_id", "secret_id", "knowledge_id", "thread_id"):
+        # card_id (canonical) + legacy typed IDs
+        for field in ("card_id", "memory_id", "secret_id", "knowledge_id", "thread_id"):
             val = frontmatter.get(field)
             if val:
                 aliases.append(normalize_key(str(val)))

@@ -196,8 +196,8 @@ def _split_sql(sql: str) -> list[str]:
                 stmt = stmt[:-1].strip()
             # Skip comments-only blocks
             if stmt and not all(
-                l.strip().startswith("--") or not l.strip()
-                for l in stmt.splitlines()
+                line.strip().startswith("--") or not line.strip()
+                for line in stmt.splitlines()
             ):
                 statements.append(stmt)
             current = []
@@ -208,8 +208,8 @@ def _split_sql(sql: str) -> list[str]:
         if stmt.endswith(";"):
             stmt = stmt[:-1].strip()
         if stmt and not all(
-            l.strip().startswith("--") or not l.strip()
-            for l in stmt.splitlines()
+            line.strip().startswith("--") or not line.strip()
+            for line in stmt.splitlines()
         ):
             statements.append(stmt)
 

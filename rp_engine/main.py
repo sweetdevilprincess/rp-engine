@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from rp_engine import __version__
 from rp_engine.config import get_config
+from rp_engine.container import ServiceContainer
 from rp_engine.database import Database
+from rp_engine.services.analysis_pipeline import AnalysisPipeline
+from rp_engine.services.ancestry_resolver import AncestryResolver
+from rp_engine.services.branch_manager import BranchManager
 from rp_engine.services.card_indexer import CardIndexer
 from rp_engine.services.context_engine import ContextEngine
 from rp_engine.services.entity_extractor import EntityExtractor
@@ -19,11 +23,8 @@ from rp_engine.services.file_watcher import FileWatcher
 from rp_engine.services.graph_resolver import GraphResolver
 from rp_engine.services.llm_client import LLMClient
 from rp_engine.services.npc_engine import NPCEngine
-from rp_engine.services.scene_classifier import SceneClassifier
-from rp_engine.services.analysis_pipeline import AnalysisPipeline
 from rp_engine.services.response_analyzer import ResponseAnalyzer
-from rp_engine.services.ancestry_resolver import AncestryResolver
-from rp_engine.services.branch_manager import BranchManager
+from rp_engine.services.scene_classifier import SceneClassifier
 from rp_engine.services.state_manager import StateManager
 from rp_engine.services.thread_tracker import ThreadTracker
 from rp_engine.services.timestamp_tracker import TimestampTracker
@@ -112,8 +113,10 @@ async def lifespan(app: FastAPI):
 
     # Phase 6: Branch Manager
     branch_manager = BranchManager(db=db, state_manager=state_manager, resolver=resolver)
-    context_engine.branch_manager = branch_manager
-    context_engine.writing_intelligence = writing_intelligence
+    context_engine.configure(
+        branch_manager=branch_manager,
+        writing_intelligence=writing_intelligence,
+    )
 
     # Phase 5: Analysis Pipeline
     thread_tracker = ThreadTracker(db)
@@ -129,28 +132,35 @@ async def lifespan(app: FastAPI):
     )
     analysis_pipeline.start()
 
-    # Store on app state for dependency injection
-    app.state.db = db
-    app.state.card_indexer = card_indexer
-    app.state.vault_root = vault_root
-    app.state.file_watcher = file_watcher
-    app.state.entity_extractor = entity_extractor
-    app.state.scene_classifier = scene_classifier
-    app.state.graph_resolver = graph_resolver
-    app.state.vector_search = vector_search
-    app.state.trigger_evaluator = trigger_evaluator
-    app.state.context_engine = context_engine
-    app.state.llm_client = llm_client
-    app.state.npc_engine = npc_engine
-    app.state.npc_intelligence = npc_intelligence
-    app.state.writing_intelligence = writing_intelligence
-    app.state.ancestry_resolver = resolver
-    app.state.state_manager = state_manager
-    app.state.branch_manager = branch_manager
-    app.state.thread_tracker = thread_tracker
-    app.state.timestamp_tracker = timestamp_tracker
-    app.state.response_analyzer = response_analyzer
-    app.state.analysis_pipeline = analysis_pipeline
+    # Build service container and store on app state
+    services = ServiceContainer(
+        db=db,
+        card_indexer=card_indexer,
+        vault_root=vault_root,
+        file_watcher=file_watcher,
+        entity_extractor=entity_extractor,
+        scene_classifier=scene_classifier,
+        graph_resolver=graph_resolver,
+        vector_search=vector_search,
+        trigger_evaluator=trigger_evaluator,
+        context_engine=context_engine,
+        llm_client=llm_client,
+        npc_engine=npc_engine,
+        npc_intelligence=npc_intelligence,
+        writing_intelligence=writing_intelligence,
+        ancestry_resolver=resolver,
+        state_manager=state_manager,
+        branch_manager=branch_manager,
+        thread_tracker=thread_tracker,
+        timestamp_tracker=timestamp_tracker,
+        response_analyzer=response_analyzer,
+        analysis_pipeline=analysis_pipeline,
+    )
+    app.state.services = services
+
+    # Individual attrs for backward compatibility with dependencies.py
+    for field in ServiceContainer.__dataclass_fields__:
+        setattr(app.state, field, getattr(services, field))
 
     yield
 
@@ -170,18 +180,32 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow local HTML files and any localhost origin
+# CORS — configurable origins (defaults to localhost only)
 from starlette.middleware.cors import CORSMiddleware  # noqa: E402
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_config().server.cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include routers
-from rp_engine.routers import analyze, branches, cards, context, exchanges, npc, rp, sessions, state, threads, triggers, writing  # noqa: E402
+from rp_engine.routers import (  # noqa: E402
+    analyze,
+    branches,
+    cards,
+    context,
+    exchanges,
+    guidelines,
+    npc,
+    rp,
+    sessions,
+    state,
+    threads,
+    triggers,
+    writing,
+)
 
 app.include_router(cards.router)
 app.include_router(sessions.router)
@@ -195,6 +219,7 @@ app.include_router(threads.router)
 app.include_router(analyze.router)
 app.include_router(branches.router)
 app.include_router(writing.router)
+app.include_router(guidelines.router)
 
 
 @app.get("/health")
@@ -214,5 +239,13 @@ async def health_check():
         "vault_root": str(config.paths.vault_root),
         "database": db_health,
         "indexed_cards": indexed,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
+
+
+# Serve frontend static build (must be AFTER all API routes)
+from fastapi.staticfiles import StaticFiles as _StaticFiles  # noqa: E402
+
+_FRONTEND_BUILD = Path(__file__).parent.parent / "frontend" / "build"
+if _FRONTEND_BUILD.exists():
+    app.mount("/", _StaticFiles(directory=_FRONTEND_BUILD, html=True), name="frontend")

@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +37,7 @@ from rp_engine.services.graph_resolver import GraphResolver
 from rp_engine.services.scene_classifier import SceneClassifier
 from rp_engine.services.trigger_evaluator import TriggerEvaluator
 from rp_engine.services.vector_search import VectorSearch
+from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,13 @@ class ContextEngine:
         self.npc_engine = npc_engine
         self.branch_manager = None
         self.writing_intelligence = None
+
+    def configure(self, **kwargs: Any) -> None:
+        """Set late-bound dependencies (avoids monkey-patching attributes)."""
+        for key, value in kwargs.items():
+            if not hasattr(self, key):
+                raise AttributeError(f"ContextEngine has no attribute '{key}'")
+            setattr(self, key, value)
 
     async def get_context(
         self,
@@ -280,7 +287,7 @@ class ContextEngine:
 
             # Record sent (await to ensure committed before next read)
             if session_id:
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
                 future = await self.db.enqueue_write(
                     """INSERT OR REPLACE INTO context_sent
                            (session_id, entity_id, content_hash, sent_at_turn, sent_at)
@@ -301,32 +308,92 @@ class ContextEngine:
             if n.entity_id not in all_npcs:
                 all_npcs[n.entity_id] = n
 
-        for npc_id, npc in all_npcs.items():
-            # Load character data
-            char_row = await self.db.fetch_one(
-                """SELECT importance, primary_archetype, secondary_archetype,
-                          behavioral_modifiers, emotional_state, conditions
-                   FROM characters WHERE rp_folder = ? AND branch = ? AND LOWER(name) = ?""",
-                [rp_folder, branch, npc.name.lower()],
+        # Batch-fetch card data, runtime state, and trust for all detected NPCs
+        npc_ids = list(all_npcs.keys())
+        card_map: dict[str, dict] = {}
+        runtime_map: dict[str, dict] = {}
+        trust_map: dict[str, int] = {}  # npc name (lower) -> trust score
+
+        if npc_ids:
+            # Batch card data
+            placeholders = ",".join("?" for _ in npc_ids)
+            card_rows = await self.db.fetch_all(
+                f"SELECT id, importance, frontmatter FROM story_cards WHERE id IN ({placeholders})",
+                npc_ids,
             )
+            for row in card_rows:
+                card_map[row["id"]] = row
 
-            importance = char_row["importance"] if char_row else None
+            # Batch runtime state (latest per card_id)
+            runtime_rows = await self.db.fetch_all(
+                f"""SELECT cse.card_id, cse.emotional_state, cse.conditions
+                    FROM character_state_entries cse
+                    INNER JOIN (
+                        SELECT card_id, MAX(exchange_number) as max_ex
+                        FROM character_state_entries
+                        WHERE rp_folder = ? AND branch = ? AND card_id IN ({placeholders})
+                        GROUP BY card_id
+                    ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
+                    WHERE cse.rp_folder = ? AND cse.branch = ?""",
+                [rp_folder, branch] + npc_ids + [rp_folder, branch],
+            )
+            for row in runtime_rows:
+                runtime_map[row["card_id"]] = row
 
-            # Also check story_cards for importance if no character row
-            if not importance:
-                sc_row = await self.db.fetch_one(
-                    "SELECT importance FROM story_cards WHERE id = ?", [npc_id]
-                )
-                importance = sc_row["importance"] if sc_row else None
+            # Batch trust: baselines + modification sums
+            npc_names_lower = {npc.name.lower() for npc in all_npcs.values()}
+            baseline_rows = await self.db.fetch_all(
+                """SELECT LOWER(character_a) as ca, LOWER(character_b) as cb, baseline_score
+                   FROM trust_baselines WHERE rp_folder = ? AND branch = ?""",
+                [rp_folder, branch],
+            )
+            for row in baseline_rows:
+                ca, cb = row["ca"], row["cb"]
+                if ca in npc_names_lower:
+                    trust_map[ca] = trust_map.get(ca, 0) + row["baseline_score"]
+                if cb in npc_names_lower and cb != ca:
+                    trust_map[cb] = trust_map.get(cb, 0) + row["baseline_score"]
+
+            mod_rows = await self.db.fetch_all(
+                """SELECT LOWER(character_a) as ca, LOWER(character_b) as cb,
+                          COALESCE(SUM(change), 0) as total
+                   FROM trust_modifications WHERE rp_folder = ? AND branch = ?
+                   GROUP BY LOWER(character_a), LOWER(character_b)""",
+                [rp_folder, branch],
+            )
+            for row in mod_rows:
+                ca, cb = row["ca"], row["cb"]
+                if ca in npc_names_lower:
+                    trust_map[ca] = trust_map.get(ca, 0) + row["total"]
+                if cb in npc_names_lower and cb != ca:
+                    trust_map[cb] = trust_map.get(cb, 0) + row["total"]
+
+        active_npc_ids = {n.entity_id for n in extraction.active_npcs}
+
+        for npc_id, npc in all_npcs.items():
+            sc_row = card_map.get(npc_id)
+            card_fm = safe_parse_json(sc_row.get("frontmatter")) if sc_row else {}
+            importance = (sc_row["importance"] if sc_row else None) or card_fm.get("importance")
+
+            runtime = runtime_map.get(npc_id)
+
+            char_row = {
+                "importance": importance,
+                "primary_archetype": card_fm.get("primary_archetype"),
+                "secondary_archetype": card_fm.get("secondary_archetype"),
+                "behavioral_modifiers": card_fm.get("behavioral_modifiers"),
+                "emotional_state": runtime["emotional_state"] if runtime else None,
+                "conditions": runtime["conditions"] if runtime else None,
+            }
 
             if importance and importance in BRIEF_IMPORTANCE:
-                # Build full NPC brief
-                brief = await self._build_npc_brief(
-                    npc.name, npc_id, char_row, rp_folder, branch, signal_list
+                pre_trust = trust_map.get(npc.name.lower(), 0)
+                brief = self._build_npc_brief_sync(
+                    npc.name, char_row, pre_trust, signal_list
                 )
                 npc_briefs.append(brief)
             else:
-                reason = "active_in_scene" if npc_id in {n.entity_id for n in extraction.active_npcs} else "mentioned"
+                reason = "active_in_scene" if npc_id in active_npc_ids else "mentioned"
                 flagged_npcs.append(FlaggedNPC(
                     character=npc.name,
                     importance=importance,
@@ -434,9 +501,11 @@ class ContextEngine:
             return []
 
     async def _get_scene_state(self, rp_folder: str, branch: str) -> SceneState:
-        """Load current scene context."""
+        """Load current scene context from CoW scene_state_entries."""
         row = await self.db.fetch_one(
-            "SELECT location, time_of_day, mood, in_story_timestamp FROM scene_context WHERE rp_folder = ? AND branch = ?",
+            """SELECT location, time_of_day, mood, in_story_timestamp
+               FROM scene_state_entries WHERE rp_folder = ? AND branch = ?
+               ORDER BY exchange_number DESC LIMIT 1""",
             [rp_folder, branch],
         )
         if row:
@@ -446,24 +515,33 @@ class ContextEngine:
     async def _get_character_states(
         self, rp_folder: str, branch: str
     ) -> dict[str, CharacterState]:
-        """Load all character states."""
-        rows = await self.db.fetch_all(
-            "SELECT name, location, conditions, emotional_state FROM characters WHERE rp_folder = ? AND branch = ?",
+        """Load all character states from CoW tables."""
+        # Get active characters from ledger
+        ledger_rows = await self.db.fetch_all(
+            """SELECT cl.card_id, sc.name
+               FROM character_ledger cl
+               JOIN story_cards sc ON cl.card_id = sc.id
+               WHERE cl.rp_folder = ? AND cl.branch = ? AND cl.status = 'active'""",
             [rp_folder, branch],
         )
         states: dict[str, CharacterState] = {}
-        for row in rows:
-            conditions = []
-            if row.get("conditions"):
-                try:
-                    conditions = json.loads(row["conditions"]) if isinstance(row["conditions"], str) else row["conditions"]
-                except (json.JSONDecodeError, TypeError):
-                    conditions = []
-            states[row["name"]] = CharacterState(
-                location=row.get("location"),
-                conditions=conditions if isinstance(conditions, list) else [],
-                emotional_state=row.get("emotional_state"),
+        for lr in ledger_rows:
+            runtime = await self.db.fetch_one(
+                """SELECT location, conditions, emotional_state
+                   FROM character_state_entries
+                   WHERE card_id = ? AND rp_folder = ? AND branch = ?
+                   ORDER BY exchange_number DESC LIMIT 1""",
+                [lr["card_id"], rp_folder, branch],
             )
+            if runtime:
+                conditions = safe_parse_json_list(runtime.get("conditions"))
+                states[lr["name"]] = CharacterState(
+                    location=runtime.get("location"),
+                    conditions=conditions,
+                    emotional_state=runtime.get("emotional_state"),
+                )
+            else:
+                states[lr["name"]] = CharacterState()
         return states
 
     async def _get_guidelines(self, rp_folder: str) -> GuidelinesResponse | None:
@@ -539,18 +617,11 @@ class ContextEngine:
             if not thresholds_raw:
                 continue
 
-            try:
-                thresholds = json.loads(thresholds_raw) if isinstance(thresholds_raw, str) else thresholds_raw
-            except (json.JSONDecodeError, TypeError):
+            thresholds = safe_parse_json(thresholds_raw)
+            if not thresholds:
                 continue
 
-            try:
-                consequences = json.loads(consequences_raw) if isinstance(consequences_raw, str) else consequences_raw
-            except (json.JSONDecodeError, TypeError):
-                consequences = {}
-
-            if not isinstance(thresholds, dict):
-                continue
+            consequences = safe_parse_json(consequences_raw)
 
             # Find highest crossed threshold
             best_level = None
@@ -605,24 +676,19 @@ class ContextEngine:
         for row in rows:
             fm_raw = row.get("frontmatter")
             if fm_raw:
-                try:
-                    fm = json.loads(fm_raw) if isinstance(fm_raw, str) else fm_raw
-                    if fm.get("always_load"):
-                        always_load.append(row)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+                fm = safe_parse_json(fm_raw)
+                if fm.get("always_load"):
+                    always_load.append(row)
         return always_load
 
-    async def _build_npc_brief(
+    def _build_npc_brief_sync(
         self,
         name: str,
-        entity_id: str,
         char_row: dict | None,
-        rp_folder: str,
-        branch: str,
+        pre_trust: int,
         signal_list: list[str],
     ) -> NPCBrief:
-        """Build a behavioral brief for a significant NPC."""
+        """Build a behavioral brief using pre-fetched data (no DB queries)."""
         archetype = char_row.get("primary_archetype") if char_row else None
         secondary = char_row.get("secondary_archetype") if char_row else None
         modifiers_raw = char_row.get("behavioral_modifiers") if char_row else None
@@ -630,35 +696,11 @@ class ContextEngine:
         conditions_raw = char_row.get("conditions") if char_row else None
         importance = char_row.get("importance") if char_row else None
 
-        modifiers: list[str] = []
-        if modifiers_raw:
-            try:
-                modifiers = json.loads(modifiers_raw) if isinstance(modifiers_raw, str) else modifiers_raw
-            except (json.JSONDecodeError, TypeError):
-                modifiers = []
+        modifiers = safe_parse_json_list(modifiers_raw)
+        conditions = safe_parse_json_list(conditions_raw)
 
-        conditions: list[str] = []
-        if conditions_raw:
-            try:
-                conditions = json.loads(conditions_raw) if isinstance(conditions_raw, str) else conditions_raw
-            except (json.JSONDecodeError, TypeError):
-                conditions = []
+        stage = trust_stage(pre_trust)
 
-        # Load trust score
-        trust_score = 0
-        rel_row = await self.db.fetch_one(
-            """SELECT initial_trust_score + trust_modification_sum as score
-               FROM relationships
-               WHERE rp_folder = ? AND branch = ?
-                 AND (LOWER(character_a) = ? OR LOWER(character_b) = ?)""",
-            [rp_folder, branch, name.lower(), name.lower()],
-        )
-        if rel_row:
-            trust_score = rel_row["score"] or 0
-
-        stage = trust_stage(trust_score)
-
-        # Build deterministic behavioral direction
         direction = self._build_behavioral_direction(
             archetype, stage, modifiers, signal_list
         )
@@ -669,7 +711,7 @@ class ContextEngine:
             archetype=archetype,
             secondary_archetype=secondary,
             behavioral_modifiers=modifiers if isinstance(modifiers, list) else [],
-            trust_score=trust_score,
+            trust_score=pre_trust,
             trust_stage=stage,
             emotional_state=emotional,
             conditions=conditions if isinstance(conditions, list) else [],
@@ -737,4 +779,4 @@ class ContextEngine:
 
 def _hash_content(content: str) -> str:
     """Quick hash for content change detection."""
-    return hashlib.md5(content.encode()).hexdigest()
+    return hashlib.sha256(content.encode()).hexdigest()

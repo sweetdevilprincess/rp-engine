@@ -122,18 +122,32 @@ async def pipeline_env(db: Database):
     )
     exchange_id = await future
 
-    # Add scene context for timestamp tracker
+    # Add story cards for characters so StateManager can update them
+    for name in ("Dante Moretti", "Lilith Graves"):
+        card_id = f"TestRP:{name.lower()}"
+        await db.enqueue_write(
+            """INSERT OR REPLACE INTO story_cards
+               (id, rp_folder, file_path, card_type, name, importance, frontmatter, indexed_at)
+               VALUES (?, ?, ?, 'character', ?, 'main', '{}', '2026-01-01T00:00:00')""",
+            [card_id, "TestRP", f"Story Cards/Characters/{name}.md", name],
+        )
+
+    # Add scene context for timestamp tracker (CoW scene_state_entries)
     await db.enqueue_write(
-        """INSERT INTO scene_context (rp_folder, branch, location, time_of_day, mood, in_story_timestamp)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO scene_state_entries
+           (rp_folder, branch, exchange_number, location, time_of_day, mood, in_story_timestamp, created_at)
+           VALUES (?, ?, 0, ?, ?, ?, ?, '2026-01-01T00:00:00')""",
         ["TestRP", "main", "Harbor", "night", "tense",
          "[Wednesday, March 5, 2025 - 11:00 PM, Harbor]"],
     )
 
     await asyncio.sleep(0.1)
 
+    from rp_engine.services.ancestry_resolver import AncestryResolver
+
     mock_llm = PipelineMockLLM()
-    state_manager = StateManager(db=db, config=trust_config)
+    resolver = AncestryResolver(db)
+    state_manager = StateManager(db=db, config=trust_config, resolver=resolver)
     response_analyzer = ResponseAnalyzer(db, mock_llm)
     thread_tracker = ThreadTracker(db)
     timestamp_tracker = TimestampTracker(db, state_manager)
@@ -318,7 +332,9 @@ class TestRetryBehavior:
             async def generate(self, **kwargs):
                 raise RuntimeError("Always fails")
 
-        state_manager = StateManager(db=db, config=trust_config)
+        from rp_engine.services.ancestry_resolver import AncestryResolver
+        resolver = AncestryResolver(db)
+        state_manager = StateManager(db=db, config=trust_config, resolver=resolver)
         response_analyzer = ResponseAnalyzer(db, FailingLLM())
         thread_tracker = ThreadTracker(db)
         timestamp_tracker = TimestampTracker(db)

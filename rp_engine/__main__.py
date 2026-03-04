@@ -1,7 +1,9 @@
 """Allow running with `python -m rp_engine` or the `rp-engine` console script."""
 
 import argparse
+
 import uvicorn
+
 from rp_engine.config import get_config
 
 

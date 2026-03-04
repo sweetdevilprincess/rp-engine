@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -18,8 +17,8 @@ def _get_writing_intelligence(request: Request):
 
 class WritingFeedbackBody(BaseModel):
     original_output: str
-    user_feedback: Optional[str] = None
-    user_rewrite: Optional[str] = None
+    user_feedback: str | None = None
+    user_rewrite: str | None = None
     accepted: bool = True
 
 
@@ -38,7 +37,7 @@ async def writing_stats(
 
 @router.get("/api/writing/intelligence/patterns")
 async def writing_patterns(
-    category: Optional[str] = Query(None),
+    category: str | None = Query(None),
     writing_intelligence=Depends(_get_writing_intelligence),
 ):
     """List writing patterns, optionally filtered by category."""
