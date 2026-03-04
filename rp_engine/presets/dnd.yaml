@@ -1,0 +1,43 @@
+name: "D&D 5e Basics"
+description: "Hit points, armor class, spell slots, inventory, gold"
+schemas:
+  - id: hp
+    category: combat_stats
+    name: "Hit Points"
+    data_type: number
+    config: {min: 0, max: 999, default: 100}
+    belongs_to: character
+    inject_as: stat_block
+    display_order: 1
+  - id: ac
+    category: combat_stats
+    name: "Armor Class"
+    data_type: number
+    config: {min: 0, max: 30, default: 10}
+    belongs_to: character
+    inject_as: stat_block
+    display_order: 2
+  - id: spell_slots
+    category: magic
+    name: "Spell Slots"
+    data_type: object
+    config: {schema: {level_1: number, level_2: number, level_3: number}}
+    belongs_to: character
+    inject_as: stat_block
+    display_order: 3
+  - id: inventory
+    category: inventory
+    name: "Inventory"
+    data_type: list
+    config: {item_type: {name: text, quantity: number, description: text}}
+    belongs_to: character
+    inject_as: inventory_list
+    display_order: 10
+  - id: gold
+    category: inventory
+    name: "Gold"
+    data_type: number
+    config: {min: 0, default: 0}
+    belongs_to: character
+    inject_as: stat_block
+    display_order: 11

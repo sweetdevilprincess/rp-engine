@@ -15,16 +15,19 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from rp_engine.dependencies import (
+    get_auto_save_manager,
     get_context_engine,
     get_db,
     get_graph_resolver,
     get_vault_root,
 )
 from rp_engine.models.context import (
+    AutoSaveResult as AutoSaveResultModel,
     ContextRequest,
     ContextResponse,
     ResolveRequest,
 )
+from rp_engine.services.auto_save import AutoSaveManager
 from rp_engine.models.rp import GuidelinesResponse
 from rp_engine.utils.frontmatter import parse_file
 
@@ -43,9 +46,31 @@ async def get_context(
     branch: str = Query("main"),
     session_id: str = Query(None),
     context_engine=Depends(get_context_engine),
+    auto_save: AutoSaveManager | None = Depends(get_auto_save_manager),
 ):
-    """The main endpoint. Smart API, dumb client."""
-    return await context_engine.get_context(body, rp_folder, branch, session_id)
+    """The main endpoint. Smart API, dumb client.
+
+    When auto-save is enabled and last_response contains <output> tags,
+    the previous exchange is auto-saved before returning context.
+    """
+    auto_saved = None
+    if auto_save is not None:
+        result = await auto_save.try_auto_save(
+            body.user_message, body.last_response, rp_folder, branch, session_id
+        )
+        if result is not None:
+            auto_saved = AutoSaveResultModel(
+                exchange_id=result.exchange_id,
+                exchange_number=result.exchange_number,
+                session_id=result.session_id,
+            )
+
+    resp = await context_engine.get_context(body, rp_folder, branch, session_id)
+
+    if auto_saved is not None:
+        resp.auto_saved = auto_saved
+
+    return resp
 
 
 @router.post("/resolve")

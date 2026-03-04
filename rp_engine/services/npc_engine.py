@@ -83,6 +83,7 @@ class NPCEngine:
         vault_root: Path,
         npc_intelligence=None,
         scene_classifier=None,
+        resolver=None,
     ) -> None:
         self.db = db
         self.llm_client = llm_client
@@ -92,6 +93,7 @@ class NPCEngine:
         self.vault_root = vault_root
         self.npc_intelligence = npc_intelligence
         self._scene_classifier = scene_classifier
+        self.resolver = resolver
 
         # Framework caches (loaded on init)
         self._archetypes: dict[str, str] = {}
@@ -333,30 +335,22 @@ class NPCEngine:
         rp_folder: str = "",
         branch: str = "main",
     ) -> TrustInfo:
-        """Get full trust information for an NPC-target relationship."""
-        rel_row = await self.db.fetch_one(
-            """SELECT id, initial_trust_score + trust_modification_sum as score,
-                      trust_stage, dynamic, session_trust_gained, session_trust_lost
-               FROM relationships
-               WHERE rp_folder = ? AND branch = ?
-                 AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                   OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-            [rp_folder, branch, npc_name, target, target, npc_name],
-        )
+        """Get full trust information for an NPC-target relationship.
 
+        Uses AncestryResolver for branch-aware trust data (baseline + modifications).
+        """
         score = 0
-        session_gains = 0
-        session_losses = 0
         history: list[TrustEvent] = []
 
-        if rel_row:
-            score = rel_row["score"] or 0
-            session_gains = rel_row.get("session_trust_gained") or 0
-            session_losses = rel_row.get("session_trust_lost") or 0
+        if self.resolver:
+            trust_data = await self.resolver.resolve_trust(
+                npc_name, target, rp_folder, branch
+            )
+            score = trust_data["live_score"]
 
-            history_rows = await self.db.fetch_all(
-                "SELECT date, change, direction, reason FROM trust_modifications WHERE relationship_id = ? ORDER BY created_at DESC LIMIT 10",
-                [rel_row["id"]],
+            # Load recent trust history
+            history_rows = await self.resolver.resolve_trust_full_history(
+                npc_name, target, rp_folder, branch
             )
             history = [
                 TrustEvent(
@@ -365,16 +359,34 @@ class NPCEngine:
                     direction=r.get("direction") or "neutral",
                     reason=r.get("reason"),
                 )
-                for r in history_rows
+                for r in history_rows[:10]
             ]
+        else:
+            # Fallback: direct query on trust_baselines + trust_modifications
+            baseline_row = await self.db.fetch_one(
+                """SELECT baseline_score FROM trust_baselines
+                   WHERE rp_folder = ? AND branch = ?
+                     AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
+                       OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
+                [rp_folder, branch, npc_name, target, target, npc_name],
+            )
+            baseline = baseline_row["baseline_score"] if baseline_row else 0
+            mod_sum = await self.db.fetch_val(
+                """SELECT COALESCE(SUM(change), 0) FROM trust_modifications
+                   WHERE rp_folder = ? AND branch = ?
+                     AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
+                       OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
+                [rp_folder, branch, npc_name, target, target, npc_name],
+            )
+            score = baseline + (mod_sum or 0)
 
         return TrustInfo(
             npc_name=npc_name,
             target=target,
             trust_score=score,
             trust_stage=trust_stage(score),
-            session_gains=session_gains,
-            session_losses=session_losses,
+            session_gains=0,
+            session_losses=0,
             history=history,
         )
 

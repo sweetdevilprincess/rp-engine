@@ -89,7 +89,9 @@ TOOLS = [
             "briefs, scene state, character conditions, plot thread alerts, triggered "
             "notes, and current_exchange number (needed for save_exchange). The API does "
             "all intelligence -- entity extraction, keyword matching, graph traversal, "
-            "semantic search. You just send the raw user message."
+            "semantic search. You just send the raw user message. "
+            "Wrap RP narrative in <output> tags in last_response. Exchanges are "
+            "auto-saved when tags are present and active-rp is enabled."
         ),
         inputSchema={
             "type": "object",
@@ -111,8 +113,9 @@ TOOLS = [
     Tool(
         name="save_exchange",
         description=(
-            "Save a completed RP exchange to the database. Call AFTER writing an RP "
-            "response. IMPORTANT: assistant_response must contain ONLY the RP narrative "
+            "Save a completed RP exchange to the database. For manual corrections only "
+            "-- normal flow uses auto-save via <output> tags in get_scene_context. "
+            "IMPORTANT: assistant_response must contain ONLY the RP narrative "
             "text -- strip all thinking blocks, tool call results, and meta commentary. "
             "Do NOT call this for meta discussions, system questions, or out-of-character "
             "chat. Pass exchange_number = current_exchange + 1 from the get_scene_context "

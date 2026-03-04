@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import '../app.css';
-	import Sidebar from '$lib/components/nav/Sidebar.svelte';
+	import Header from '$lib/components/nav/Header.svelte';
+	import Footer from '$lib/components/nav/Footer.svelte';
 	import ToastContainer from '$lib/components/ui/ToastContainer.svelte';
 	import { rpList } from '$lib/stores/rp';
 	import { serverHealth } from '$lib/stores/health';
@@ -32,11 +33,12 @@
 	});
 </script>
 
-<div class="flex h-screen overflow-hidden">
-	<Sidebar />
+<div class="flex flex-col min-h-screen bg-bg">
+	<Header />
 	<main class="flex-1 overflow-y-auto p-6">
 		<slot />
 	</main>
+	<Footer />
 </div>
 
 <ToastContainer />

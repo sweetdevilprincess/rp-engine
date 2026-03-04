@@ -42,9 +42,6 @@ class StateManager:
         self.db = db
         self.config = config
         self.resolver = resolver
-        # In-memory session trust caps (session-scoped, reset at session start)
-        # key: (char_a, char_b, rp_folder, branch) -> {"gained": int, "lost": int}
-        self._session_trust_caps: dict[tuple[str, str, str, str], dict[str, int]] = {}
 
     # ===================================================================
     # Exchange Number Resolution
@@ -113,34 +110,48 @@ class StateManager:
     async def get_all_characters(
         self, rp_folder: str, branch: str = "main"
     ) -> dict[str, CharacterDetail]:
-        """Fetch all characters, resolving state through ancestry."""
-        # Get active characters from ledger
+        """Fetch all characters, resolving state through ancestry (batch)."""
+        # Get active characters from ledger + card data in one query
         ledger_rows = await self.db.fetch_all(
-            "SELECT * FROM character_ledger WHERE rp_folder = ? AND branch = ? AND status = 'active'",
+            """SELECT cl.card_id, sc.*
+               FROM character_ledger cl
+               JOIN story_cards sc ON cl.card_id = sc.id
+               WHERE cl.rp_folder = ? AND cl.branch = ? AND cl.status = 'active'""",
             [rp_folder, branch],
         )
+        if not ledger_rows:
+            return {}
+
+        # Batch fetch runtime state
+        card_ids = [lr["card_id"] for lr in ledger_rows]
+        runtime_map: dict[str, dict] = {}
+
+        if card_ids:
+            placeholders = ",".join("?" for _ in card_ids)
+            runtime_rows = await self.db.fetch_all(
+                f"""SELECT cse.* FROM character_state_entries cse
+                    INNER JOIN (
+                        SELECT card_id, MAX(exchange_number) as max_ex
+                        FROM character_state_entries
+                        WHERE rp_folder = ? AND branch = ? AND card_id IN ({placeholders})
+                        GROUP BY card_id
+                    ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
+                    WHERE cse.rp_folder = ? AND cse.branch = ?""",
+                [rp_folder, branch] + card_ids + [rp_folder, branch],
+            )
+            for row in runtime_rows:
+                runtime_map[row["card_id"]] = dict(row)
 
         result = {}
         for lr in ledger_rows:
-            card = await self.db.fetch_one(
-                "SELECT * FROM story_cards WHERE id = ?", [lr["card_id"]]
-            )
-            if not card:
-                continue
-
-            runtime = None
-            if self.resolver:
-                runtime = await self.resolver.resolve_character_state(
-                    lr["card_id"], rp_folder, branch
-                )
-
-            fm = safe_parse_json(card.get("frontmatter"))
+            fm = safe_parse_json(lr.get("frontmatter"))
+            runtime = runtime_map.get(lr["card_id"])
 
             detail = CharacterDetail(
-                name=card["name"],
-                card_path=card.get("file_path"),
+                name=lr["name"],
+                card_path=lr.get("file_path"),
                 is_player_character=bool(fm.get("is_player_character", False)),
-                importance=card.get("importance") or fm.get("importance"),
+                importance=lr.get("importance") or fm.get("importance"),
                 primary_archetype=fm.get("primary_archetype"),
                 secondary_archetype=fm.get("secondary_archetype"),
                 behavioral_modifiers=safe_parse_json_list(fm.get("behavioral_modifiers")),
@@ -150,7 +161,7 @@ class StateManager:
                 last_seen=runtime.get("last_seen") if runtime else None,
                 updated_at=runtime.get("created_at") if runtime else None,
             )
-            result[card["name"]] = detail
+            result[lr["name"]] = detail
         return result
 
     async def get_characters_at_location(
@@ -311,7 +322,7 @@ class StateManager:
         branch: str = "main",
         character: str | None = None,
     ) -> list[RelationshipDetail]:
-        """Fetch all relationships, optionally filtered by character."""
+        """Fetch all relationships, optionally filtered by character (batch)."""
         if not self.resolver:
             logger.warning("get_all_relationships called without resolver")
             return []
@@ -330,6 +341,20 @@ class StateManager:
                 [rp_folder, branch],
             )
 
+        if not baseline_rows:
+            return []
+
+        # Batch fetch modification sums for all pairs at once
+        mod_rows = await self.db.fetch_all(
+            """SELECT character_a, character_b, COALESCE(SUM(change), 0) as total
+               FROM trust_modifications WHERE rp_folder = ? AND branch = ?
+               GROUP BY character_a, character_b""",
+            [rp_folder, branch],
+        )
+        mod_map: dict[tuple[str, str], int] = {}
+        for row in mod_rows:
+            mod_map[(row["character_a"], row["character_b"])] = row["total"]
+
         results = []
         seen_pairs: set[tuple[str, str]] = set()
         for br in baseline_rows:
@@ -338,13 +363,57 @@ class StateManager:
                 continue
             seen_pairs.add(pair)
 
-            rel = await self.get_relationship(
-                br["character_a"], br["character_b"], rp_folder, branch
-            )
-            if rel:
-                results.append(rel)
+            baseline = br.get("baseline_score") or 0
+            mod_sum = mod_map.get(pair, 0)
+            live = baseline + mod_sum
+
+            results.append(RelationshipDetail(
+                character_a=br["character_a"],
+                character_b=br["character_b"],
+                initial_trust_score=baseline,
+                trust_modification_sum=mod_sum,
+                live_trust_score=live,
+                trust_stage=trust_stage(live),
+            ))
 
         return results
+
+    async def _get_session_trust_caps(
+        self, char_a: str, char_b: str, rp_folder: str, branch: str
+    ) -> dict[str, int]:
+        """Compute session trust caps from DB.
+
+        Sums gains and losses for this character pair in the current active session.
+        Survives server restarts — DB is the source of truth.
+        """
+        # Find active session
+        session_row = await self.db.fetch_one(
+            """SELECT id FROM sessions
+               WHERE rp_folder = ? AND branch = ? AND ended_at IS NULL
+               ORDER BY started_at DESC LIMIT 1""",
+            [rp_folder, branch],
+        )
+        if not session_row:
+            return {"gained": 0, "lost": 0}
+
+        row = await self.db.fetch_one(
+            """SELECT
+                   COALESCE(SUM(CASE WHEN tm.change > 0 THEN tm.change ELSE 0 END), 0) as session_gained,
+                   COALESCE(SUM(CASE WHEN tm.change < 0 THEN tm.change ELSE 0 END), 0) as session_lost
+               FROM trust_modifications tm
+               JOIN exchanges e ON tm.exchange_id = e.id
+               WHERE e.session_id = ?
+                 AND tm.rp_folder = ? AND tm.branch = ?
+                 AND ((LOWER(tm.character_a) = LOWER(?) AND LOWER(tm.character_b) = LOWER(?))
+                   OR (LOWER(tm.character_a) = LOWER(?) AND LOWER(tm.character_b) = LOWER(?)))""",
+            [session_row["id"], rp_folder, branch,
+             char_a, char_b, char_b, char_a],
+        )
+
+        return {
+            "gained": row["session_gained"] if row else 0,
+            "lost": row["session_lost"] if row else 0,
+        }
 
     async def update_trust(
         self,
@@ -361,7 +430,7 @@ class StateManager:
 
         Uses trust_modifications with direct columns (character_a, character_b, branch,
         exchange_number, rp_folder) for direct querying without JOIN.
-        Checks session caps and score bounds.
+        Checks session caps (computed from DB) and score bounds.
         """
         if not self.resolver:
             raise RuntimeError("update_trust requires an AncestryResolver")
@@ -373,9 +442,8 @@ class StateManager:
         trust_data = await self.resolver.resolve_trust(char_a, char_b, rp_folder, branch)
         current_live = trust_data["live_score"]
 
-        # Check session caps (in-memory)
-        cap_key = (char_a.lower(), char_b.lower(), rp_folder, branch)
-        caps = self._session_trust_caps.setdefault(cap_key, {"gained": 0, "lost": 0})
+        # Check session caps (computed from DB — survives restarts)
+        caps = await self._get_session_trust_caps(char_a, char_b, rp_folder, branch)
 
         effective_change = change
         if change > 0:
@@ -415,12 +483,6 @@ class StateManager:
                 live_trust_score=current_live, trust_stage=trust_stage(current_live),
             )
 
-        # Update session caps
-        if effective_change > 0:
-            caps["gained"] += effective_change
-        elif effective_change < 0:
-            caps["lost"] += effective_change
-
         # Ensure trust baseline exists for this pair/branch
         existing_baseline = await self.db.fetch_one(
             """SELECT * FROM trust_baselines
@@ -458,15 +520,6 @@ class StateManager:
             live_trust_score=current_live + effective_change,
             trust_stage=trust_stage(current_live + effective_change),
         )
-
-    async def reset_session_caps(self, rp_folder: str, branch: str = "main") -> None:
-        """Reset in-memory session trust caps. Called at session start."""
-        keys_to_clear = [
-            k for k in self._session_trust_caps
-            if k[2] == rp_folder and k[3] == branch
-        ]
-        for k in keys_to_clear:
-            del self._session_trust_caps[k]
 
     # ===================================================================
     # Scene Context

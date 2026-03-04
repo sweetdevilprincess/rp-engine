@@ -6,6 +6,40 @@ export interface StoryCardSummary {
   summary: string | null;
   aliases: string[];
   tags: string[];
+  connection_count: number;
+}
+
+export interface ChunkRow {
+  id: number;
+  file_path: string | null;
+  rp_folder: string | null;
+  card_type: string | null;
+  chunk_index: number;
+  total_chunks: number;
+  content: string;
+  has_embedding: boolean;
+  created_at: string | null;
+}
+
+export interface VectorStats {
+  total_chunks: number;
+  chunks_with_embeddings: number;
+  chunks_without_embeddings: number;
+  total_files: number;
+  avg_chunk_size: number;
+  cards_without_vectors: string[];
+}
+
+export interface DebugSearchResult {
+  id: number;
+  file_path: string | null;
+  card_type: string | null;
+  chunk_index: number;
+  content: string;
+  vector_score: number | null;
+  bm25_score: number | null;
+  fused_score: number;
+  found_by: 'vector' | 'bm25' | 'both';
 }
 export interface EntityConnection {
   to_entity: string;

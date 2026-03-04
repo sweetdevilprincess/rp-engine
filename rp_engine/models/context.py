@@ -109,6 +109,12 @@ class WritingConstraints(BaseModel):
     token_count: int = 0
 
 
+class AutoSaveResult(BaseModel):
+    exchange_id: int
+    exchange_number: int
+    session_id: str
+
+
 class ContextResponse(BaseModel):
     current_exchange: int
     documents: list[ContextDocument] = []
@@ -124,6 +130,7 @@ class ContextResponse(BaseModel):
     card_gaps: list[CardGap] = []
     warnings: list[StalenessWarning] = []
     writing_constraints: WritingConstraints | None = None
+    auto_saved: AutoSaveResult | None = None
 
 
 # ---------------------------------------------------------------------------

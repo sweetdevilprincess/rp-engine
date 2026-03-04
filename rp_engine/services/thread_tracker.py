@@ -35,6 +35,9 @@ class ThreadTracker:
     ) -> list[ThreadAlert]:
         """Update all thread counters and return any threshold alerts.
 
+        Uses CoW thread_counter_entries: one row per exchange for rewind support.
+        Also updates the thread_counters cache table for fast reads.
+
         For each active thread:
         - If ANY keyword, related character, or related location appears
           in response_text (case-insensitive) → reset counter to 0
@@ -49,6 +52,15 @@ class ThreadTracker:
         text_lower = response_text.lower()
         now = datetime.now(UTC).isoformat()
         alerts: list[ThreadAlert] = []
+
+        # Resolve exchange_number
+        exchange_number = 0
+        if exchange_id is not None:
+            row = await self.db.fetch_one(
+                "SELECT exchange_number FROM exchanges WHERE id = ?", [exchange_id]
+            )
+            if row:
+                exchange_number = row["exchange_number"]
 
         for thread in threads:
             thread_id = thread["id"]
@@ -66,7 +78,19 @@ class ThreadTracker:
                     thread_id, prev_counter, new_counter,
                 )
 
-            # Write counter and await so subsequent reads are consistent
+            # Write CoW entry (append-only, enables rewind)
+            future = await self.db.enqueue_write(
+                """INSERT INTO thread_counter_entries
+                       (thread_id, rp_folder, branch, exchange_number,
+                        counter_value, mentioned, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                [thread_id, rp_folder, branch, exchange_number,
+                 new_counter, 1 if mentioned else 0, now],
+                priority=PRIORITY_ANALYSIS,
+            )
+            await future
+
+            # Also update cache table for fast reads
             future = await self.db.enqueue_write(
                 """INSERT INTO thread_counters (thread_id, rp_folder, branch, current_counter, updated_at)
                    VALUES (?, ?, ?, ?, ?)
@@ -189,7 +213,29 @@ class ThreadTracker:
     async def _load_counters(
         self, rp_folder: str, branch: str
     ) -> dict[str, int]:
-        """Load current counter values as {thread_id: counter}."""
+        """Load current counter values as {thread_id: counter}.
+
+        Prefers CoW thread_counter_entries (latest per thread). Falls back
+        to the thread_counters cache table.
+        """
+        # Try CoW entries first (latest per thread_id)
+        rows = await self.db.fetch_all(
+            """SELECT tce.thread_id, tce.counter_value
+               FROM thread_counter_entries tce
+               INNER JOIN (
+                   SELECT thread_id, MAX(exchange_number) as max_ex
+                   FROM thread_counter_entries
+                   WHERE rp_folder = ? AND branch = ?
+                   GROUP BY thread_id
+               ) latest ON tce.thread_id = latest.thread_id
+                   AND tce.exchange_number = latest.max_ex
+               WHERE tce.rp_folder = ? AND tce.branch = ?""",
+            [rp_folder, branch, rp_folder, branch],
+        )
+        if rows:
+            return {r["thread_id"]: r["counter_value"] for r in rows}
+
+        # Fall back to cache table
         rows = await self.db.fetch_all(
             "SELECT thread_id, current_counter FROM thread_counters "
             "WHERE rp_folder = ? AND branch = ?",

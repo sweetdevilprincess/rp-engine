@@ -8,3 +8,5 @@ export * from './sessions';
 export * from './exchanges';
 export * from './branches';
 export * from './threads';
+export * from './vectors';
+export * from './config';

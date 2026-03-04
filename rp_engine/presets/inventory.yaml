@@ -1,0 +1,17 @@
+name: "Simple Inventory"
+description: "Basic inventory tracking with money"
+schemas:
+  - id: inventory
+    category: inventory
+    name: "Inventory"
+    data_type: list
+    belongs_to: character
+    inject_as: inventory_list
+    display_order: 1
+  - id: money
+    category: inventory
+    name: "Money"
+    data_type: text
+    belongs_to: character
+    inject_as: stat_block
+    display_order: 2

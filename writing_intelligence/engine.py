@@ -1,7 +1,10 @@
+"""Writing intelligence engine — thin subclass of shared base."""
+
 from typing import Callable, Optional
 
+from pattern_intelligence.engine import BasePatternIntelligence
 from .types import (
-    FeedbackInput, InjectionPayload, Pattern, TaskSignature,
+    TaskSignature, FeedbackInput, InjectionPayload, Pattern,
 )
 from .db import PatternDB
 from .classifier import TaskClassifier
@@ -11,42 +14,19 @@ from .feedback import FeedbackProcessor
 from .proficiency import ProficiencyUpdater
 
 
-class WritingIntelligence:
+class WritingIntelligence(BasePatternIntelligence):
     def __init__(self, db_path: str = "writing_intelligence.db",
                  token_budget: int = 600,
                  llm_call: Optional[Callable[[str], str]] = None,
                  count_tokens: Optional[Callable[[str], int]] = None):
-        self.db = PatternDB(db_path)
+        db = PatternDB(db_path)
         self.classifier = TaskClassifier()
-        self.retriever = PatternRetriever(self.db)
+        self.retriever = PatternRetriever(db)
         self.formatter = InjectionFormatter(token_budget, count_tokens)
-        self.feedback_processor = FeedbackProcessor(self.db, llm_call)
-        self.proficiency_updater = ProficiencyUpdater(self.db)
+        feedback_processor = FeedbackProcessor(db, llm_call)
+        proficiency_updater = ProficiencyUpdater(db)
 
-        self._session_id: Optional[str] = None
-        self._current_task_sig: Optional[TaskSignature] = None
-        self._current_injected_ids: list[str] = []
-        self._current_output_id: Optional[str] = None
-        self._exchange_count: int = 0
-
-    def start_session(self) -> str:
-        self._session_id = self.db.create_session()
-        self._exchange_count = 0
-        return self._session_id
-
-    def end_session(self) -> dict:
-        patterns = self.db.get_all_patterns()
-        avg_prof = (sum(p.proficiency for p in patterns) / len(patterns)) if patterns else 0.0
-        self.db.end_session(self._session_id, self._exchange_count,
-                            len(patterns), avg_prof)
-        summary = {
-            "session_id": self._session_id,
-            "exchanges": self._exchange_count,
-            "patterns_active": len(patterns),
-            "avg_proficiency": round(avg_prof, 3),
-        }
-        self._session_id = None
-        return summary
+        super().__init__(db, feedback_processor, proficiency_updater)
 
     def prepare(self, prompt: str, preceding_content: Optional[str] = None,
                 task_override: Optional[dict] = None) -> InjectionPayload:
@@ -54,109 +34,6 @@ class WritingIntelligence:
         scored = self.retriever.retrieve(task_sig)
         payload = self.formatter.format(scored, task_sig)
 
-        self._current_task_sig = task_sig
-        self._current_injected_ids = payload.patterns_included
-
-        self._current_output_id = self.db.log_output(
-            self._session_id or "", task_sig,
-            payload.patterns_included, "")
+        self._log_and_track(task_sig, payload.patterns_included)
 
         return payload
-
-    def record_outcome(self, output_text: str, accepted: bool = True,
-                       feedback: Optional[FeedbackInput] = None) -> dict:
-        self._exchange_count += 1
-
-        if accepted:
-            if self._current_output_id:
-                self.db.mark_output_accepted(self._current_output_id)
-            self.proficiency_updater.on_accepted(self._current_injected_ids)
-            result = {
-                "output_id": self._current_output_id,
-                "patterns_updated": list(self._current_injected_ids),
-                "patterns_created": [],
-            }
-        elif feedback:
-            if self._current_output_id:
-                self.db.mark_output_corrected(self._current_output_id, [])
-
-            pattern_ids = self.feedback_processor.process(
-                feedback, self._current_task_sig)
-
-            corrected_and_injected = set(pattern_ids) & set(self._current_injected_ids)
-            corrected_not_injected = set(pattern_ids) - set(self._current_injected_ids)
-
-            self.proficiency_updater.on_corrected(
-                list(corrected_and_injected), self._current_injected_ids)
-
-            for pid in corrected_not_injected:
-                self.proficiency_updater.on_regression(pid)
-
-            if self._current_output_id:
-                self.db.mark_output_corrected(self._current_output_id, pattern_ids)
-
-            result = {
-                "output_id": self._current_output_id,
-                "patterns_updated": list(corrected_and_injected),
-                "patterns_created": list(set(pattern_ids) - corrected_and_injected),
-            }
-        else:
-            result = {
-                "output_id": self._current_output_id,
-                "patterns_updated": [],
-                "patterns_created": [],
-            }
-
-        self._current_task_sig = None
-        self._current_injected_ids = []
-        self._current_output_id = None
-        return result
-
-    # --- Direct Pattern Management ---
-
-    def add_pattern(self, pattern: Pattern) -> str:
-        return self.db.insert_pattern(pattern)
-
-    def get_pattern(self, pattern_id: str) -> Optional[Pattern]:
-        return self.db.get_pattern(pattern_id)
-
-    def list_patterns(self, category: Optional[str] = None) -> list[Pattern]:
-        patterns = self.db.get_all_patterns()
-        if category:
-            patterns = [p for p in patterns if p.category.value == category]
-        return patterns
-
-    def update_pattern(self, pattern: Pattern) -> None:
-        self.db.update_pattern(pattern)
-
-    # --- Diagnostics ---
-
-    def get_stats(self) -> dict:
-        patterns = self.db.get_all_patterns()
-        if not patterns:
-            return {"total_patterns": 0, "avg_proficiency": 0.0,
-                    "by_category": {}, "low_proficiency_count": 0,
-                    "high_severity_count": 0}
-        by_cat = {}
-        for p in patterns:
-            cat = p.category.value
-            by_cat[cat] = by_cat.get(cat, 0) + 1
-        return {
-            "total_patterns": len(patterns),
-            "avg_proficiency": round(
-                sum(p.proficiency for p in patterns) / len(patterns), 3),
-            "by_category": by_cat,
-            "low_proficiency_count": sum(1 for p in patterns if p.proficiency < 0.4),
-            "high_severity_count": sum(1 for p in patterns if p.severity > 0.7),
-        }
-
-    # --- Lifecycle ---
-
-    def close(self) -> None:
-        self.db.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()

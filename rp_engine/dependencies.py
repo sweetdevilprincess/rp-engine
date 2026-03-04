@@ -14,6 +14,7 @@ from fastapi import Request
 from rp_engine.container import ServiceContainer
 from rp_engine.database import Database
 from rp_engine.services.analysis_pipeline import AnalysisPipeline
+from rp_engine.services.auto_save import AutoSaveManager
 from rp_engine.services.ancestry_resolver import AncestryResolver
 from rp_engine.services.branch_manager import BranchManager
 from rp_engine.services.card_indexer import CardIndexer
@@ -117,3 +118,10 @@ def get_analysis_pipeline(request: Request) -> AnalysisPipeline | None:
 
 def get_branch_manager(request: Request) -> BranchManager:
     return _get(request, "branch_manager")
+
+
+def get_auto_save_manager(request: Request) -> AutoSaveManager | None:
+    container = getattr(request.app.state, "services", None)
+    if container is not None:
+        return getattr(container, "auto_save_manager", None)
+    return getattr(request.app.state, "auto_save_manager", None)

@@ -67,21 +67,11 @@ BRIEF_IMPORTANCE = {"critical", "main", "antagonist", "love_interest"}
 
 def trust_stage(score: int) -> str:
     """Compute trust stage from score in -50 to 50 range."""
-    if score <= -36:
-        return "hostile"
-    if score <= -21:
-        return "antagonistic"
-    if score <= -11:
-        return "suspicious"
-    if score <= -1:
-        return "wary"
-    if score <= 9:
-        return "neutral"
-    if score <= 19:
-        return "familiar"
-    if score <= 34:
-        return "trusted"
-    return "devoted"
+    for low, high, stage in TRUST_STAGES:
+        if low <= score <= high:
+            return stage
+    # Clamp to extremes
+    return TRUST_STAGES[0][2] if score < TRUST_STAGES[0][0] else TRUST_STAGES[-1][2]
 
 
 class ContextEngine:
@@ -482,15 +472,12 @@ class ContextEngine:
         if not matched_entities:
             return []
 
-        cards = []
-        for m in matched_entities:
-            card = await self.db.fetch_one(
-                "SELECT id, name, card_type, file_path, content, summary, content_hash FROM story_cards WHERE id = ?",
-                [m.entity_id],
-            )
-            if card:
-                cards.append(card)
-        return cards
+        entity_ids = [m.entity_id for m in matched_entities]
+        placeholders = ",".join("?" for _ in entity_ids)
+        return await self.db.fetch_all(
+            f"SELECT id, name, card_type, file_path, content, summary, content_hash FROM story_cards WHERE id IN ({placeholders})",
+            entity_ids,
+        )
 
     async def _semantic_search(self, query: str, rp_folder: str):
         """Run vector search for semantic matches."""
@@ -515,7 +502,7 @@ class ContextEngine:
     async def _get_character_states(
         self, rp_folder: str, branch: str
     ) -> dict[str, CharacterState]:
-        """Load all character states from CoW tables."""
+        """Load all character states from CoW tables (batch query)."""
         # Get active characters from ledger
         ledger_rows = await self.db.fetch_all(
             """SELECT cl.card_id, sc.name
@@ -524,15 +511,30 @@ class ContextEngine:
                WHERE cl.rp_folder = ? AND cl.branch = ? AND cl.status = 'active'""",
             [rp_folder, branch],
         )
+        if not ledger_rows:
+            return {}
+
+        card_ids = [lr["card_id"] for lr in ledger_rows]
+        placeholders = ",".join("?" for _ in card_ids)
+
+        # Batch fetch latest runtime state per card_id
+        runtime_rows = await self.db.fetch_all(
+            f"""SELECT cse.card_id, cse.location, cse.conditions, cse.emotional_state
+                FROM character_state_entries cse
+                INNER JOIN (
+                    SELECT card_id, MAX(exchange_number) as max_ex
+                    FROM character_state_entries
+                    WHERE rp_folder = ? AND branch = ? AND card_id IN ({placeholders})
+                    GROUP BY card_id
+                ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
+                WHERE cse.rp_folder = ? AND cse.branch = ?""",
+            [rp_folder, branch] + card_ids + [rp_folder, branch],
+        )
+        runtime_map = {row["card_id"]: row for row in runtime_rows}
+
         states: dict[str, CharacterState] = {}
         for lr in ledger_rows:
-            runtime = await self.db.fetch_one(
-                """SELECT location, conditions, emotional_state
-                   FROM character_state_entries
-                   WHERE card_id = ? AND rp_folder = ? AND branch = ?
-                   ORDER BY exchange_number DESC LIMIT 1""",
-                [lr["card_id"], rp_folder, branch],
-            )
+            runtime = runtime_map.get(lr["card_id"])
             if runtime:
                 conditions = safe_parse_json_list(runtime.get("conditions"))
                 states[lr["name"]] = CharacterState(

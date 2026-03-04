@@ -162,6 +162,14 @@ MONTH_NAMES = {
     "september": 9, "october": 10, "november": 11, "december": 12,
 }
 
+MONTH_LIST = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+# Days per month (Feb always 28 — no leap year handling for RP purposes)
+DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
 WEEKDAYS = [
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
 ]
@@ -323,7 +331,7 @@ class TimestampTracker:
 
     @staticmethod
     def _advance(ts: dict, minutes: int) -> dict:
-        """Advance a parsed timestamp by N minutes."""
+        """Advance a parsed timestamp by N minutes, handling month/year boundaries."""
         hour24 = ts["hour"]
         if ts["period"] == "PM" and ts["hour"] != 12:
             hour24 += 12
@@ -357,11 +365,33 @@ class TimestampTracker:
         current_idx = WEEKDAYS.index(ts["weekday"]) if ts["weekday"] in WEEKDAYS else 0
         new_weekday_idx = (current_idx + days_add) % 7
 
+        # Month/year overflow handling
+        month_name = ts["month"]
+        month_idx = MONTH_NAMES.get(month_name.lower(), 1) - 1  # 0-based
+        day = ts["day"] + days_add
+        year = ts["year"]
+
+        # Forward overflow
+        while day > DAYS_IN_MONTH[month_idx]:
+            day -= DAYS_IN_MONTH[month_idx]
+            month_idx += 1
+            if month_idx >= 12:
+                month_idx = 0
+                year += 1
+
+        # Backward overflow
+        while day < 1:
+            month_idx -= 1
+            if month_idx < 0:
+                month_idx = 11
+                year -= 1
+            day += DAYS_IN_MONTH[month_idx]
+
         return {
             "weekday": WEEKDAYS[new_weekday_idx],
-            "month": ts["month"],
-            "day": ts["day"] + days_add,
-            "year": ts["year"],
+            "month": MONTH_LIST[month_idx],
+            "day": day,
+            "year": year,
             "hour": new_h12,
             "minute": new_min,
             "period": new_period,

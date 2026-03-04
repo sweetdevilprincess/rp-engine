@@ -44,6 +44,7 @@ class AnalysisPipeline:
         thread_tracker: ThreadTracker,
         timestamp_tracker: TimestampTracker,
         trust_config: TrustConfig,
+        lance_store=None,
     ) -> None:
         self.db = db
         self.response_analyzer = response_analyzer
@@ -51,6 +52,7 @@ class AnalysisPipeline:
         self.thread_tracker = thread_tracker
         self.timestamp_tracker = timestamp_tracker
         self.trust_config = trust_config
+        self.lance_store = lance_store
         self._queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
         self._consumer_task: asyncio.Task | None = None
         self._running = False
@@ -279,6 +281,22 @@ class AnalysisPipeline:
             asst_resp, rp_folder, branch
         )
         result.timestamp_advanced = ts_result.new_timestamp is not None
+
+        # 9b. Exchange embedding (LanceDB)
+        if self.lance_store:
+            try:
+                exchange_number = exchange.get("exchange_number", 0)
+                await self.lance_store.embed_exchange(
+                    exchange_number=exchange_number,
+                    user_message=user_msg,
+                    assistant_response=asst_resp,
+                    rp_folder=rp_folder,
+                    branch=branch,
+                    session_id=exchange.get("session_id"),
+                    in_story_timestamp=ts_result.new_timestamp,
+                )
+            except Exception as e:
+                logger.warning("Exchange embedding failed: %s", e)
 
         # 10. Mark analysis as completed
         await self.db.enqueue_write(

@@ -17,6 +17,7 @@ class StoryCardSummary(BaseModel):
     summary: str | None = None
     aliases: list[str] = []
     tags: list[str] = []
+    connection_count: int = 0
 
 
 class EntityConnection(BaseModel):

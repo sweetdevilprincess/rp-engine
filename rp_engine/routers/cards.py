@@ -65,6 +65,18 @@ async def list_cards(
         params,
     )
 
+    # Batch-fetch connection counts for all returned cards
+    if rows:
+        id_list = [row["id"] for row in rows]
+        placeholders = ",".join("?" * len(id_list))
+        count_rows = await db.fetch_all(
+            f"SELECT from_entity, COUNT(*) as cnt FROM entity_connections WHERE from_entity IN ({placeholders}) GROUP BY from_entity",
+            id_list,
+        )
+        connection_counts = {r["from_entity"]: r["cnt"] for r in count_rows}
+    else:
+        connection_counts = {}
+
     cards = []
     for row in rows:
         alias_rows = await db.fetch_all(
@@ -91,9 +103,60 @@ async def list_cards(
             summary=row["summary"],
             aliases=aliases,
             tags=tags if isinstance(tags, list) else [],
+            connection_count=connection_counts.get(row["id"], 0),
         ))
 
     return CardListResponse(cards=cards, total=len(cards))
+
+
+@router.get("/connections")
+async def get_connections(
+    rp_folder: str = Query(...),
+    db: Database = Depends(get_db),
+):
+    """Return graph data (nodes + edges) for all cards in an RP.
+
+    Used by the Dashboard entity graph. Queries entity_connections and
+    maps entity IDs back to card names.
+    """
+    card_rows = await db.fetch_all(
+        "SELECT id, name, card_type, importance FROM story_cards WHERE rp_folder = ?",
+        [rp_folder],
+    )
+    if not card_rows:
+        return {"nodes": [], "edges": []}
+
+    id_to_card = {row["id"]: row for row in card_rows}
+
+    conn_rows = await db.fetch_all(
+        """SELECT ec.from_entity, ec.to_entity, ec.connection_type
+           FROM entity_connections ec
+           JOIN story_cards sc ON ec.from_entity = sc.id
+           WHERE sc.rp_folder = ?""",
+        [rp_folder],
+    )
+
+    nodes = [
+        {
+            "name": row["name"],
+            "card_type": row["card_type"],
+            "importance": row["importance"],
+        }
+        for row in card_rows
+    ]
+
+    edges = []
+    for conn in conn_rows:
+        from_card = id_to_card.get(conn["from_entity"])
+        to_card = id_to_card.get(conn["to_entity"])
+        if from_card and to_card:
+            edges.append({
+                "from": from_card["name"],
+                "to": to_card["name"],
+                "connection_type": conn["connection_type"],
+            })
+
+    return {"nodes": nodes, "edges": edges}
 
 
 # IMPORTANT: /reindex must be defined BEFORE /{card_type} to avoid route shadowing

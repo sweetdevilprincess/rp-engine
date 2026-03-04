@@ -121,6 +121,7 @@ class WriteQueue:
         """Execute a single write operation."""
         conn = self.db._write_connection
         try:
+            lastrowid = None
             if item.many:
                 await conn.executemany(item.sql, item.params)
             else:
@@ -128,7 +129,7 @@ class WriteQueue:
                 lastrowid = cursor.lastrowid
             await conn.commit()
             if item.result_future and not item.result_future.done():
-                item.result_future.set_result(lastrowid if not item.many else None)
+                item.result_future.set_result(lastrowid)
         except Exception as e:
             if item.retry_count < item.max_retries:
                 delay = 2 ** item.retry_count * 0.1

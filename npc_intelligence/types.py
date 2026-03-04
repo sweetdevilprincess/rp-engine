@@ -1,10 +1,19 @@
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+# Re-export shared types from base package
+from pattern_intelligence.types import (
+    CorrectionPair,
+    Direction,
+    ExtractionResult,
+    FeedbackInput,
+    Pattern,
+    ScoredPattern,
+)
 
-# === TRIGGER DIMENSION ENUMS ===
+
+# === TRIGGER DIMENSION ENUMS (NPC-specific) ===
 
 class Archetype(str, Enum):
     POWER_HOLDER = "power_holder"
@@ -69,10 +78,6 @@ class BehavioralCategory(str, Enum):
     HYBRID_FRICTION = "hybrid_friction"
     KNOWLEDGE_BOUNDARY = "knowledge_boundary"
 
-class Direction(str, Enum):
-    AVOID = "avoid"
-    PREFER = "prefer"
-
 
 # === DATACLASSES ===
 
@@ -108,48 +113,6 @@ class BehavioralSignature:
 
 
 @dataclass
-class CorrectionPair:
-    id: str
-    pattern_id: str
-    original: str
-    revised: str
-    critique: Optional[str] = None
-    extracted_rule: Optional[str] = None
-    tokens_original: int = 0
-    tokens_revised: int = 0
-    created_at: Optional[datetime] = None
-
-
-@dataclass
-class Pattern:
-    id: str
-    category: BehavioralCategory
-    subcategory: Optional[str]
-    description: str
-    direction: Direction
-    severity: float = 0.5
-    frequency: int = 0
-    correction_count: int = 0
-    proficiency: float = 0.2
-    context_triggers: list[str] = field(default_factory=list)
-    compressed_rule: Optional[str] = None
-    created_at: Optional[datetime] = None
-    last_triggered: Optional[datetime] = None
-    last_corrected: Optional[datetime] = None
-    # Populated at retrieval time, not stored in patterns table
-    correction_pairs: list[CorrectionPair] = field(default_factory=list)
-
-
-@dataclass
-class ScoredPattern:
-    """A Pattern with its computed retrieval score."""
-    pattern: Pattern
-    score: float
-    relevance: float
-    injection_level: str  # "critical", "moderate", "reminder", "skip"
-
-
-@dataclass
 class InjectionPayload:
     """The formatted text block ready for system prompt insertion."""
     text: str
@@ -157,26 +120,3 @@ class InjectionPayload:
     patterns_included: list[str]  # pattern IDs
     behavioral_signature: BehavioralSignature
     npc_name: str = ""
-
-
-@dataclass
-class FeedbackInput:
-    """What the caller provides when submitting feedback."""
-    original_output: str
-    user_feedback: Optional[str] = None
-    user_rewrite: Optional[str] = None
-    session_id: Optional[str] = None
-
-
-@dataclass
-class ExtractionResult:
-    """What LLM-assisted pattern extraction returns per identified pattern."""
-    category: str
-    subcategory: Optional[str]
-    description: str
-    direction: str
-    compressed_rule: str
-    context_triggers: list[str]
-    original_excerpt: Optional[str] = None
-    revised_excerpt: Optional[str] = None
-    critique_excerpt: Optional[str] = None
