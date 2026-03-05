@@ -16,6 +16,8 @@ from rp_engine.database import Database
 from rp_engine.services.analysis_pipeline import AnalysisPipeline
 from rp_engine.services.auto_save import AutoSaveManager
 from rp_engine.services.ancestry_resolver import AncestryResolver
+from rp_engine.services.custom_state_manager import CustomStateManager
+from rp_engine.services.lance_store import LanceStore
 from rp_engine.services.branch_manager import BranchManager
 from rp_engine.services.card_indexer import CardIndexer
 from rp_engine.services.context_engine import ContextEngine
@@ -125,3 +127,27 @@ def get_auto_save_manager(request: Request) -> AutoSaveManager | None:
     if container is not None:
         return getattr(container, "auto_save_manager", None)
     return getattr(request.app.state, "auto_save_manager", None)
+
+
+def get_custom_state_manager(request: Request) -> CustomStateManager:
+    return _get(request, "custom_state_manager")
+
+
+def get_lance_store(request: Request) -> LanceStore:
+    return _get(request, "lance_store")
+
+
+def get_npc_intelligence(request: Request) -> object | None:
+    """Get NPC intelligence (optional dependency, typed as object)."""
+    container = getattr(request.app.state, "services", None)
+    if container is not None:
+        return getattr(container, "npc_intelligence", None)
+    return getattr(request.app.state, "npc_intelligence", None)
+
+
+def get_writing_intelligence(request: Request) -> object | None:
+    """Get writing intelligence (optional dependency, typed as object)."""
+    container = getattr(request.app.state, "services", None)
+    if container is not None:
+        return getattr(container, "writing_intelligence", None)
+    return getattr(request.app.state, "writing_intelligence", None)

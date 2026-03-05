@@ -7,7 +7,7 @@ This module provides the shared implementation.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol
 
 
@@ -79,7 +79,7 @@ class BasePatternRetriever:
     def _compute_recency_boost(self, pattern: PatternLike) -> float:
         if pattern.last_corrected is None:
             return 0.0
-        days_ago = (datetime.utcnow() - pattern.last_corrected).total_seconds() / 86400
+        days_ago = (datetime.now(UTC) - pattern.last_corrected).total_seconds() / 86400
         if days_ago <= 1.0:
             return 1.0
         if days_ago >= self.recency_window_days:

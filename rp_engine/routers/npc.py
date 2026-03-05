@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from rp_engine.config import get_config
-from rp_engine.dependencies import get_npc_engine
+from rp_engine.dependencies import get_npc_engine, get_npc_intelligence
 from rp_engine.models.npc import (
     NPCBatchRequest,
     NPCListItem,
@@ -18,11 +18,6 @@ from rp_engine.models.npc import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _get_npc_intelligence(request: Request):
-    """Get NPC intelligence from app state, or None if not initialized."""
-    return getattr(request.app.state, "npc_intelligence", None)
 
 
 class FeedbackBody(BaseModel):
@@ -113,7 +108,7 @@ async def list_npcs(
 
 @router.get("/api/npc/intelligence/stats")
 async def intelligence_stats(
-    npc_intelligence=Depends(_get_npc_intelligence),
+    npc_intelligence=Depends(get_npc_intelligence),
 ):
     """Get NPC behavioral intelligence statistics."""
     if npc_intelligence is None:
@@ -124,7 +119,7 @@ async def intelligence_stats(
 @router.get("/api/npc/intelligence/patterns")
 async def intelligence_patterns(
     category: str | None = Query(None),
-    npc_intelligence=Depends(_get_npc_intelligence),
+    npc_intelligence=Depends(get_npc_intelligence),
 ):
     """List behavioral patterns, optionally filtered by category."""
     if npc_intelligence is None:
@@ -149,7 +144,7 @@ async def intelligence_patterns(
 @router.post("/api/npc/intelligence/feedback")
 async def intelligence_feedback(
     body: FeedbackBody,
-    npc_intelligence=Depends(_get_npc_intelligence),
+    npc_intelligence=Depends(get_npc_intelligence),
 ):
     """Submit behavioral feedback for the NPC intelligence system."""
     if npc_intelligence is None:

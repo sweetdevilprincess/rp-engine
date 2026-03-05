@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from rp_engine.dependencies import get_writing_intelligence
+
 logger = logging.getLogger(__name__)
-
-
-def _get_writing_intelligence(request: Request):
-    """Get writing intelligence from app state, or None if not initialized."""
-    return getattr(request.app.state, "writing_intelligence", None)
 
 
 class WritingFeedbackBody(BaseModel):
@@ -27,7 +24,7 @@ router = APIRouter(tags=["writing"])
 
 @router.get("/api/writing/intelligence/stats")
 async def writing_stats(
-    writing_intelligence=Depends(_get_writing_intelligence),
+    writing_intelligence=Depends(get_writing_intelligence),
 ):
     """Get writing intelligence statistics."""
     if writing_intelligence is None:
@@ -38,7 +35,7 @@ async def writing_stats(
 @router.get("/api/writing/intelligence/patterns")
 async def writing_patterns(
     category: str | None = Query(None),
-    writing_intelligence=Depends(_get_writing_intelligence),
+    writing_intelligence=Depends(get_writing_intelligence),
 ):
     """List writing patterns, optionally filtered by category."""
     if writing_intelligence is None:
@@ -63,7 +60,7 @@ async def writing_patterns(
 @router.post("/api/writing/intelligence/feedback")
 async def writing_feedback(
     body: WritingFeedbackBody,
-    writing_intelligence=Depends(_get_writing_intelligence),
+    writing_intelligence=Depends(get_writing_intelligence),
 ):
     """Submit writing feedback for the intelligence system."""
     if writing_intelligence is None:

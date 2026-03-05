@@ -296,9 +296,13 @@ class Database:
         sql: str,
         params: list[Any] | None = None,
         priority: int = PRIORITY_ANALYSIS,
+        many: bool = False,
     ) -> asyncio.Future:
-        """Enqueue a write operation. Returns a Future with lastrowid."""
-        return await self._write_queue.enqueue(sql, params, priority)
+        """Enqueue a write operation. Returns a Future with lastrowid.
+
+        Set *many* to ``True`` to use ``executemany`` for bulk inserts.
+        """
+        return await self._write_queue.enqueue(sql, params, priority, many=many)
 
     # -- Migrations --
 

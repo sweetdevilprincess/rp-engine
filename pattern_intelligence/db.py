@@ -11,7 +11,7 @@ import json
 import sqlite3
 import uuid
 from abc import abstractmethod
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Optional
 
@@ -22,7 +22,11 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
     if value is None:
         return None
     try:
-        return datetime.fromisoformat(value)
+        dt = datetime.fromisoformat(value)
+        # Ensure tz-aware (old records may have naive UTC strings)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
     except (ValueError, TypeError):
         return None
 
@@ -245,7 +249,7 @@ class BasePatternDB:
                 feedback.user_feedback,
                 feedback.user_rewrite,
                 json.dumps(pattern_ids),
-                datetime.utcnow().isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
         self.conn.commit()
@@ -275,7 +279,7 @@ class BasePatternDB:
                 json.dumps(sig_dict),
                 json.dumps(pattern_ids),
                 output_text,
-                datetime.utcnow().isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
         self.conn.commit()
@@ -304,7 +308,7 @@ class BasePatternDB:
         session_id = str(uuid.uuid4())
         self.conn.execute(
             "INSERT INTO sessions (id, started_at) VALUES (?, ?)",
-            (session_id, datetime.utcnow().isoformat()),
+            (session_id, datetime.now(UTC).isoformat()),
         )
         self.conn.commit()
         return session_id
@@ -317,7 +321,7 @@ class BasePatternDB:
             """UPDATE sessions SET ended_at = ?, exchanges = ?,
                patterns_active = ?, avg_proficiency = ? WHERE id = ?""",
             (
-                datetime.utcnow().isoformat(),
+                datetime.now(UTC).isoformat(),
                 exchanges,
                 patterns_active,
                 avg_proficiency,

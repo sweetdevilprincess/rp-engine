@@ -78,9 +78,6 @@ class BasePatternIntelligence:
                 "patterns_created": [],
             }
         elif feedback:
-            if self._current_output_id:
-                self.db.mark_output_corrected(self._current_output_id, [])
-
             pattern_ids = self.feedback_processor.process(
                 feedback, self._current_signature)
 
