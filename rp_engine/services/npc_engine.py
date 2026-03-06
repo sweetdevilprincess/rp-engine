@@ -22,7 +22,7 @@ from rp_engine.models.npc import (
     TrustInfo,
     TrustShift,
 )
-from rp_engine.services.context_engine import trust_stage
+from rp_engine.utils.trust import trust_stage
 from rp_engine.services.graph_resolver import GraphResolver
 from rp_engine.services.llm_client import LLMClient
 from rp_engine.services.vector_search import VectorSearch
@@ -84,6 +84,7 @@ class NPCEngine:
         npc_intelligence=None,
         scene_classifier=None,
         resolver=None,
+        lance_store=None,
     ) -> None:
         self.db = db
         self.llm_client = llm_client
@@ -94,6 +95,7 @@ class NPCEngine:
         self.npc_intelligence = npc_intelligence
         self._scene_classifier = scene_classifier
         self.resolver = resolver
+        self.lance_store = lance_store
 
         # Framework caches (loaded on init)
         self._archetypes: dict[str, str] = {}
@@ -169,8 +171,19 @@ class NPCEngine:
         # 3. Load trust data from trust_baselines + trust_modifications
         trust_score = 0
         trust_stage_name = "neutral"
-        dynamic = None
         trust_history: list[dict] = []
+
+        # Load relationship dynamic (role) from entity_connections
+        dynamic_row = await self.db.fetch_one(
+            """SELECT role FROM entity_connections
+               WHERE connection_type = 'has_relationship'
+                 AND ((LOWER(from_entity) = LOWER(?) AND LOWER(to_entity) = LOWER(?))
+                   OR (LOWER(from_entity) = LOWER(?) AND LOWER(to_entity) = LOWER(?)))
+                 AND role IS NOT NULL
+               LIMIT 1""",
+            [card_name, pov_character, pov_character, card_name],
+        )
+        dynamic = dynamic_row["role"] if dynamic_row else None
 
         baseline_row = await self.db.fetch_one(
             """SELECT baseline_score FROM trust_baselines
@@ -203,6 +216,11 @@ class NPCEngine:
 
         # 4. Detect intimate context
         intimate = self._detect_intimate(scene_prompt)
+
+        # 4b. Search past interactions with this NPC
+        npc_history = await self._search_npc_history(
+            card_name, scene_prompt, rp_folder, branch
+        )
 
         # 5. Build character context (user message for LLM)
         character_context = self._build_character_context(
@@ -268,6 +286,8 @@ class NPCEngine:
             full_context += f"\n## CANON FACTS — Secrets You Know\nThese are ESTABLISHED FACTS. Use exact details. Do NOT invent alternatives.\n\n{secrets_text}\n"
         if scene_enrichment:
             full_context += f"\n## Scene-Relevant Context\n{scene_enrichment}\n"
+        if npc_history:
+            full_context += f"\n## Past Interactions with {pov_character}\nUse these past interactions to ground your response. Reference specific past events naturally — don't enumerate them, weave them into your reaction.\n\n{npc_history}\n"
 
         full_context += f"\n---\n## What Just Happened\n{scene_prompt}\n"
 
@@ -561,7 +581,7 @@ class NPCEngine:
 ## Current Relationship with {pov_character}
 - Trust Score: {trust_score}
 - Trust Stage: {trust_stage_name}
-- Dynamic: {dynamic or 'Unknown'}
+{f'- Dynamic: {dynamic}' if dynamic else ''}
 - Recent History:
 {history_str}"""
 
@@ -647,6 +667,49 @@ class NPCEngine:
     # ------------------------------------------------------------------
     # Data loading helpers
     # ------------------------------------------------------------------
+
+    async def _search_npc_history(
+        self,
+        npc_name: str,
+        scene_context: str,
+        rp_folder: str,
+        branch: str,
+    ) -> str:
+        """Search past exchanges for NPC-specific interaction history."""
+        if not self.lance_store:
+            return ""
+
+        limit = self.config.npc.history_search_limit
+        min_score = self.config.npc.history_min_score
+
+        try:
+            query = f"{npc_name} {scene_context[:200]}"
+            results = await self.lance_store.search_exchanges(
+                query_text=query,
+                rp_folder=rp_folder,
+                branch=branch,
+                limit=limit * 2,
+            )
+        except Exception as e:
+            logger.warning("NPC history search failed for %s: %s", npc_name, e)
+            return ""
+
+        # Post-filter: keep only chunks mentioning this NPC
+        npc_lower = npc_name.lower()
+        filtered = [
+            r for r in results
+            if npc_lower in r.text.lower() and r.score >= min_score
+        ][:limit]
+
+        if not filtered:
+            return ""
+
+        lines = []
+        for r in filtered:
+            ex_num = r.metadata.get("exchange_number", "?")
+            lines.append(f"Exchange #{ex_num} ({r.metadata.get('speaker', 'unknown')}):\n> {r.text[:500]}")
+
+        return "\n\n".join(lines)
 
     async def _load_recent_exchanges(
         self,

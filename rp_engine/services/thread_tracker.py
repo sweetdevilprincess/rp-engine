@@ -11,7 +11,7 @@ import logging
 from datetime import UTC, datetime
 
 from rp_engine.database import PRIORITY_ANALYSIS, Database
-from rp_engine.models.analysis import ThreadDetail
+from rp_engine.models.analysis import ThreadDetail, ThreadEvidence
 from rp_engine.models.context import ThreadAlert
 from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
 
@@ -66,17 +66,28 @@ class ThreadTracker:
             thread_id = thread["id"]
             prev_counter = counters.get(thread_id, thread.get("current_counter") or 0)
 
-            mentioned = self._check_mention(thread, text_lower)
+            mentioned, matched_term = self._check_mention(thread, text_lower)
 
             if mentioned:
                 new_counter = 0
-                logger.debug("Thread %r: mentioned, reset to 0", thread_id)
+                direction = "reset"
+                logger.debug("Thread %r: mentioned (%s), reset to 0", thread_id, matched_term)
             else:
                 new_counter = prev_counter + 1
+                direction = "increment"
                 logger.debug(
                     "Thread %r: not mentioned, %d → %d",
                     thread_id, prev_counter, new_counter,
                 )
+
+            # Record evidence
+            chunk_text = None
+            if mentioned and matched_term:
+                chunk_text = self._extract_snippet(response_text, matched_term)
+            await self._record_evidence(
+                thread_id, rp_folder, branch, exchange_number,
+                matched_term, chunk_text, prev_counter, new_counter, direction, now,
+            )
 
             # Write CoW entry (append-only, enables rewind)
             future = await self.db.enqueue_write(
@@ -142,9 +153,10 @@ class ThreadTracker:
         return result
 
     async def get_thread(
-        self, thread_id: str, rp_folder: str, branch: str = "main"
+        self, thread_id: str, rp_folder: str, branch: str = "main",
+        include_evidence: bool = True,
     ) -> ThreadDetail | None:
-        """Load a single thread with its current counter."""
+        """Load a single thread with its current counter and evidence trail."""
         row = await self.db.fetch_one(
             "SELECT * FROM plot_threads WHERE id = ? AND rp_folder = ?",
             [thread_id, rp_folder],
@@ -159,6 +171,10 @@ class ThreadTracker:
         )
         counter = counter_row["current_counter"] if counter_row else 0
 
+        evidence: list[ThreadEvidence] = []
+        if include_evidence:
+            evidence = await self.get_thread_evidence(thread_id, rp_folder, branch)
+
         return ThreadDetail(
             thread_id=row["id"],
             name=row["name"],
@@ -170,6 +186,7 @@ class ThreadTracker:
             thresholds=self._parse_thresholds(row.get("thresholds")),
             consequences=self._parse_consequences(row.get("consequences")),
             related_characters=safe_parse_json_list(row.get("related_characters")),
+            evidence=evidence,
         )
 
     async def get_alerts(
@@ -244,23 +261,27 @@ class ThreadTracker:
         return {r["thread_id"]: r["current_counter"] for r in rows}
 
     @staticmethod
-    def _check_mention(thread: dict, text_lower: str) -> bool:
-        """Check if any keyword, character, or location appears in text."""
+    def _check_mention(thread: dict, text_lower: str) -> tuple[bool, str | None]:
+        """Check if any keyword, character, or location appears in text.
+
+        Returns (mentioned, matched_term) where matched_term is the first match found.
+        """
         # Keywords
         for kw in safe_parse_json_list(thread.get("keywords")):
             if kw.lower() in text_lower:
-                return True
+                return True, kw
 
         # Related characters
         for char in safe_parse_json_list(thread.get("related_characters")):
             if char.lower() in text_lower:
-                return True
+                return True, char
 
         # Related locations
-        return any(
-            loc.lower() in text_lower
-            for loc in safe_parse_json_list(thread.get("related_locations"))
-        )
+        for loc in safe_parse_json_list(thread.get("related_locations")):
+            if loc.lower() in text_lower:
+                return True, loc
+
+        return False, None
 
     @staticmethod
     def _check_threshold(
@@ -314,4 +335,126 @@ class ThreadTracker:
     def _parse_consequences(raw: str | dict | None) -> dict[str, str]:
         """Parse consequences JSON."""
         parsed = safe_parse_json(raw)
+        if not isinstance(parsed, dict):
+            return {}
         return {k: str(v) for k, v in parsed.items()}
+
+    async def get_thread_evidence(
+        self,
+        thread_id: str,
+        rp_folder: str,
+        branch: str = "main",
+        limit: int = 20,
+    ) -> list[ThreadEvidence]:
+        """Get evidence trail for a specific thread, ordered by exchange number."""
+        rows = await self.db.fetch_all(
+            """SELECT thread_id, exchange_number, keyword_matched, chunk_text,
+                      counter_before, counter_after, direction, created_at
+               FROM thread_evidence
+               WHERE thread_id = ? AND rp_folder = ? AND branch = ?
+               ORDER BY exchange_number ASC
+               LIMIT ?""",
+            [thread_id, rp_folder, branch, limit],
+        )
+        return [ThreadEvidence(**dict(r)) for r in rows]
+
+    async def get_recent_evidence(
+        self,
+        rp_folder: str,
+        branch: str = "main",
+        limit: int = 10,
+    ) -> list[ThreadEvidence]:
+        """Get recent evidence across all threads."""
+        rows = await self.db.fetch_all(
+            """SELECT thread_id, exchange_number, keyword_matched, chunk_text,
+                      counter_before, counter_after, direction, created_at
+               FROM thread_evidence
+               WHERE rp_folder = ? AND branch = ?
+               ORDER BY exchange_number DESC
+               LIMIT ?""",
+            [rp_folder, branch, limit],
+        )
+        return [ThreadEvidence(**dict(r)) for r in rows]
+
+    async def _record_evidence(
+        self,
+        thread_id: str,
+        rp_folder: str,
+        branch: str,
+        exchange_number: int,
+        keyword_matched: str | None,
+        chunk_text: str | None,
+        counter_before: int,
+        counter_after: int,
+        direction: str,
+        created_at: str,
+    ) -> None:
+        """Record evidence for a thread counter change."""
+        await self.db.enqueue_write(
+            """INSERT INTO thread_evidence
+                   (thread_id, rp_folder, branch, exchange_number,
+                    chunk_text, keyword_matched, counter_before,
+                    counter_after, direction, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [thread_id, rp_folder, branch, exchange_number,
+             chunk_text, keyword_matched, counter_before,
+             counter_after, direction, created_at],
+            priority=PRIORITY_ANALYSIS,
+        )
+
+    @staticmethod
+    def _extract_snippet(text: str, keyword: str, context_chars: int = 100) -> str:
+        """Extract a text snippet around the matched keyword."""
+        lower = text.lower()
+        kw_lower = keyword.lower()
+        idx = lower.find(kw_lower)
+        if idx == -1:
+            return text[:200]
+        start = max(0, idx - context_chars)
+        end = min(len(text), idx + len(keyword) + context_chars)
+        snippet = text[start:end]
+        if start > 0:
+            snippet = "..." + snippet
+        if end < len(text):
+            snippet = snippet + "..."
+        return snippet
+
+    async def set_counter(
+        self,
+        thread_id: str,
+        counter_value: int,
+        rp_folder: str,
+        branch: str = "main",
+        exchange_number: int = 0,
+    ) -> None:
+        """Manually set a thread counter, writing to both CoW entries and cache.
+
+        This is the correct path for manual counter updates via the API,
+        ensuring both thread_counter_entries (CoW) and thread_counters (cache)
+        stay in sync.
+        """
+        now = datetime.now(UTC).isoformat()
+
+        # Write CoW entry
+        future = await self.db.enqueue_write(
+            """INSERT INTO thread_counter_entries
+                   (thread_id, rp_folder, branch, exchange_number,
+                    counter_value, mentioned, created_at)
+               VALUES (?, ?, ?, ?, ?, 0, ?)""",
+            [thread_id, rp_folder, branch, exchange_number,
+             counter_value, now],
+            priority=PRIORITY_ANALYSIS,
+        )
+        await future
+
+        # Update cache table
+        future = await self.db.enqueue_write(
+            """INSERT INTO thread_counters (thread_id, rp_folder, branch, current_counter, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(thread_id, rp_folder, branch)
+               DO UPDATE SET current_counter = excluded.current_counter,
+                             updated_at = excluded.updated_at""",
+            [thread_id, rp_folder, branch, counter_value, now],
+            priority=PRIORITY_ANALYSIS,
+        )
+        await future

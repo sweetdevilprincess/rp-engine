@@ -7,19 +7,29 @@
 	import { listThreads } from '$lib/api/threads';
 	import type { GuidelinesResponse, StoryCardSummary, ThreadDetail } from '$lib/types';
 	import { CARD_TYPES } from '$lib/types/enums';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import SectionLabel from '$lib/components/ui/SectionLabel.svelte';
+	import ProgressBar from '$lib/components/ui/ProgressBar.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import TabBar from '$lib/components/ui/TabBar.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import ListItem from '$lib/components/ui/ListItem.svelte';
+	import InfoRow from '$lib/components/ui/InfoRow.svelte';
+	import CardSection from '$lib/components/ui/CardSection.svelte';
+	import BackButton from '$lib/components/ui/BackButton.svelte';
 
 	// ── Data ─────────────────────────────────────────────────
-	let guidelines: GuidelinesResponse | null = null;
-	let cardCounts: Record<string, number> = {};
-	let totalCards = 0;
-	let chapters: StoryCardSummary[] = [];
-	let threads: ThreadDetail[] = [];
-	let loading = false;
+	let guidelines = $state<GuidelinesResponse | null>(null);
+	let cardCounts = $state<Record<string, number>>({});
+	let totalCards = $state(0);
+	let chapters = $state<StoryCardSummary[]>([]);
+	let threads = $state<ThreadDetail[]>([]);
+	let loading = $state(false);
 
 	// ── Right panel state ─────────────────────────────────────
-	let activeTab: 'chapters' | 'threads' = 'chapters';
-	let expandedChapter: StoryCardSummary | null = null;
-	let expandedThread: string | null = null;
+	let activeTab = $state<'chapters' | 'threads'>('chapters');
+	let expandedChapter = $state<StoryCardSummary | null>(null);
+	let expandedThread = $state<string | null>(null);
 
 	onMount(async () => {
 		if (!$activeRP) return;
@@ -69,19 +79,19 @@
 	function priorityStyle(p: string | null) {
 		if (p === 'plot_critical') return 'bg-error/20 text-error';
 		if (p === 'important') return 'bg-warning/20 text-warning';
-		return 'bg-surface2 text-text-dim';
+		return 'bg-bg-subtle text-text-dim';
 	}
 
 	function statusStyle(s: string) {
 		if (s === 'active') return 'bg-success/20 text-success';
 		if (s === 'dormant') return 'bg-warning/20 text-warning';
-		return 'bg-surface2 text-text-dim';
+		return 'bg-bg-subtle text-text-dim';
 	}
 
 	function progressColor(pct: number) {
-		if (pct >= 80) return '#ef5350';
-		if (pct >= 50) return '#ffa726';
-		return '#7c6fe0';
+		if (pct >= 80) return 'var(--color-error)';
+		if (pct >= 50) return 'var(--color-warm)';
+		return 'var(--color-accent)';
 	}
 
 	const typeLabel: Record<string, string> = {
@@ -92,64 +102,54 @@
 		item: 'Items', lore: 'Lore',
 	};
 
-	$: activeThreads   = threads.filter(t => t.status === 'active');
-	$: dormantThreads  = threads.filter(t => t.status === 'dormant');
-	$: resolvedThreads = threads.filter(t => t.status === 'resolved');
+	let activeThreads   = $derived(threads.filter(t => t.status === 'active'));
+	let dormantThreads  = $derived(threads.filter(t => t.status === 'dormant'));
+	let resolvedThreads = $derived(threads.filter(t => t.status === 'resolved'));
 </script>
 
-<div class="flex gap-6">
+<div class="flex gap-4">
 
 	<!-- ── Left: Story Bible + Card Health ──────────────────── -->
-	<aside class="w-80 shrink-0 space-y-4 self-start">
+	<aside class="w-[280px] shrink-0 space-y-3 self-start">
 
 		<!-- RP header -->
-		<div class="bg-surface rounded-lg border border-border-custom px-4 py-3">
-			<h1 class="text-lg font-bold text-text">{$activeRP?.rp_folder ?? 'RP Overview'}</h1>
-			<p class="text-xs text-text-dim mt-0.5">{totalCards} story card{totalCards !== 1 ? 's' : ''}</p>
+		<div class="bg-surface rounded-[10px] border border-border-custom px-4 py-3">
+			<PageHeader title={$activeRP?.rp_folder ?? 'RP Overview'} size="md" subtitle="{totalCards} story card{totalCards !== 1 ? 's' : ''}">
+				{#snippet actions()}
+					<a
+						href="/{$activeRP?.rp_folder}/settings"
+						class="text-text-dim hover:text-accent transition-colors"
+						title="RP Settings"
+					>
+						<svg class="w-4.5 h-4.5" viewBox="0 0 20 20" fill="currentColor">
+							<path fill-rule="evenodd" d="M8.34 1.804A1 1 0 019.32 1h1.36a1 1 0 01.98.804l.295 1.473c.497.2.966.46 1.398.772l1.423-.47a1 1 0 011.164.39l.68 1.178a1 1 0 01-.184 1.194l-1.128 1.003a6.02 6.02 0 010 1.312l1.128 1.003a1 1 0 01.184 1.194l-.68 1.178a1 1 0 01-1.164.39l-1.423-.47a5.99 5.99 0 01-1.398.772l-.295 1.473a1 1 0 01-.98.804H9.32a1 1 0 01-.98-.804l-.295-1.473a5.99 5.99 0 01-1.398-.772l-1.423.47a1 1 0 01-1.164-.39l-.68-1.178a1 1 0 01.184-1.194l1.128-1.003a6.02 6.02 0 010-1.312L3.563 5.82a1 1 0 01-.184-1.194l.68-1.178a1 1 0 011.164-.39l1.423.47c.432-.312.9-.572 1.398-.772L8.34 1.804zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+						</svg>
+					</a>
+				{/snippet}
+			</PageHeader>
 		</div>
 
 		<!-- Guidelines (Story Bible) -->
 		{#if guidelines}
-			<div class="bg-surface rounded-lg border border-border-custom overflow-hidden">
-				<div class="px-4 py-2.5 border-b border-border-custom">
-					<h2 class="text-xs font-semibold text-text-dim uppercase tracking-wider">Story Bible</h2>
-				</div>
+			<CardSection title="Story Bible" compact>
 				<div class="px-4 py-3 space-y-2 text-sm">
 					{#if guidelines.pov_character}
-						<div class="flex justify-between">
-							<span class="text-text-dim">POV Character</span>
-							<span class="text-text font-medium">{guidelines.pov_character}</span>
-						</div>
+						<InfoRow label="POV Character" value={guidelines.pov_character} />
 					{/if}
 					{#if guidelines.pov_mode}
-						<div class="flex justify-between">
-							<span class="text-text-dim">POV Mode</span>
-							<span class="text-text capitalize">{guidelines.pov_mode}</span>
-						</div>
+						<InfoRow label="POV Mode"><span class="font-medium text-text capitalize">{guidelines.pov_mode}</span></InfoRow>
 					{/if}
 					{#if guidelines.narrative_voice}
-						<div class="flex justify-between">
-							<span class="text-text-dim">Narrative Voice</span>
-							<span class="text-text capitalize">{guidelines.narrative_voice} person</span>
-						</div>
+						<InfoRow label="Narrative Voice"><span class="font-medium text-text capitalize">{guidelines.narrative_voice} person</span></InfoRow>
 					{/if}
 					{#if guidelines.tense}
-						<div class="flex justify-between">
-							<span class="text-text-dim">Tense</span>
-							<span class="text-text capitalize">{guidelines.tense}</span>
-						</div>
+						<InfoRow label="Tense"><span class="font-medium text-text capitalize">{guidelines.tense}</span></InfoRow>
 					{/if}
 					{#if guidelines.scene_pacing}
-						<div class="flex justify-between">
-							<span class="text-text-dim">Pacing</span>
-							<span class="text-text capitalize">{guidelines.scene_pacing}</span>
-						</div>
+						<InfoRow label="Pacing"><span class="font-medium text-text capitalize">{guidelines.scene_pacing}</span></InfoRow>
 					{/if}
 					{#if guidelines.response_length}
-						<div class="flex justify-between">
-							<span class="text-text-dim">Response Length</span>
-							<span class="text-text capitalize">{guidelines.response_length}</span>
-						</div>
+						<InfoRow label="Response Length"><span class="font-medium text-text capitalize">{guidelines.response_length}</span></InfoRow>
 					{/if}
 					{#if toneArray(guidelines.tone).length}
 						<div>
@@ -176,24 +176,21 @@
 							<span class="text-text-dim block mb-1">Dual Characters</span>
 							<div class="flex flex-wrap gap-1">
 								{#each guidelines.dual_characters as c}
-									<span class="text-xs bg-surface2 text-text px-1.5 py-0.5 rounded">{c}</span>
+									<span class="text-xs bg-bg-subtle text-text px-1.5 py-0.5 rounded">{c}</span>
 								{/each}
 							</div>
 						</div>
 					{/if}
 				</div>
-			</div>
+			</CardSection>
 		{:else if !loading}
-			<div class="bg-surface rounded-lg border border-border-custom px-4 py-3 text-sm text-text-dim">
+			<div class="bg-surface rounded-[10px] border border-border-custom px-4 py-3 text-sm text-text-dim">
 				No guidelines found. Create a <code class="text-xs font-mono">guidelines.md</code> in the RP folder.
 			</div>
 		{/if}
 
 		<!-- Card health -->
-		<div class="bg-surface rounded-lg border border-border-custom overflow-hidden">
-			<div class="px-4 py-2.5 border-b border-border-custom">
-				<h2 class="text-xs font-semibold text-text-dim uppercase tracking-wider">Card Library</h2>
-			</div>
+		<CardSection title="Card Library" compact>
 			{#if loading}
 				<div class="px-4 py-3 text-sm text-text-dim">Loading...</div>
 			{:else if totalCards === 0}
@@ -210,7 +207,7 @@
 					{/each}
 				</div>
 			{/if}
-		</div>
+		</CardSection>
 	</aside>
 
 	<!-- ── Right: Chapters / Plot Threads ───────────────────── -->
@@ -218,33 +215,16 @@
 
 		<!-- Tab switcher + back button -->
 		<div class="flex items-center gap-2">
-			{#if expandedChapter}
-				<button
-					class="flex items-center gap-1.5 text-sm text-text-dim hover:text-text transition-colors mr-2"
-					on:click={() => (expandedChapter = null)}
-				>
-					<svg class="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
-						<path d="M10 4L6 8l4 4" />
-					</svg>
-					Back
-				</button>
+			{#if expandedChapter || expandedThread}
+				<div class="mr-2">
+					<BackButton onclick={() => { expandedChapter = null; expandedThread = null; }} />
+				</div>
 			{/if}
-			<div class="flex bg-surface border border-border-custom rounded-lg overflow-hidden">
-				<button
-					class="px-4 py-2 text-sm transition-colors
-						{activeTab === 'chapters'
-							? 'bg-accent/10 text-accent font-medium'
-							: 'text-text-dim hover:text-text hover:bg-surface2'}"
-					on:click={() => { activeTab = 'chapters'; expandedChapter = null; }}
-				>Chapters</button>
-				<button
-					class="px-4 py-2 text-sm border-l border-border-custom transition-colors
-						{activeTab === 'threads'
-							? 'bg-accent/10 text-accent font-medium'
-							: 'text-text-dim hover:text-text hover:bg-surface2'}"
-					on:click={() => { activeTab = 'threads'; expandedChapter = null; }}
-				>Plot Threads</button>
-			</div>
+			<TabBar
+				items={[{id: 'chapters', label: 'Chapters'}, {id: 'threads', label: 'Plot Threads'}]}
+				bind:active={activeTab}
+				onselect={() => { expandedChapter = null; }}
+			/>
 			{#if activeTab === 'chapters'}
 				<span class="text-xs text-text-dim">{chapters.length} chapter{chapters.length !== 1 ? 's' : ''}</span>
 			{:else}
@@ -256,8 +236,8 @@
 		{#if activeTab === 'chapters'}
 			{#if expandedChapter}
 				<!-- Full chapter view -->
-				<div class="bg-surface rounded-lg border border-border-custom p-5">
-					<h2 class="text-base font-semibold text-text mb-3">{expandedChapter.name}</h2>
+				<div class="bg-surface rounded-[10px] border border-border-custom p-5">
+					<h2 class="text-base font-semibold text-text font-serif mb-3">{expandedChapter.name}</h2>
 					{#if expandedChapter.summary}
 						<p class="text-sm text-text whitespace-pre-wrap leading-relaxed">{expandedChapter.summary}</p>
 					{:else}
@@ -265,24 +245,18 @@
 					{/if}
 				</div>
 			{:else if chapters.length === 0}
-				<div class="bg-surface rounded-lg border border-border-custom p-8 text-center text-sm text-text-dim">
-					{loading ? 'Loading chapters...' : 'No chapter summaries yet.'}
-				</div>
+				<EmptyState message={loading ? 'Loading chapters...' : 'No chapter summaries yet.'} variant={loading ? 'loading' : 'empty'} />
 			{:else}
 				<div class="space-y-2">
 					{#each chapters as chapter, i}
-						<button
-							class="w-full bg-surface rounded-lg border border-border-custom p-4 text-left
-								hover:border-accent/40 hover:bg-surface2/50 transition-colors"
-							on:click={() => (expandedChapter = chapter)}
-						>
+						<ListItem variant="card" onclick={() => (expandedChapter = chapter)}>
 							<div class="flex items-start justify-between gap-3">
 								<div class="min-w-0">
 									<div class="flex items-center gap-2 mb-1">
 										<span class="text-xs text-text-dim font-mono">Ch. {i + 1}</span>
 										{#if chapter.tags?.length}
 											{#each chapter.tags.slice(0, 2) as tag}
-												<span class="text-xs bg-surface2 text-text-dim px-1.5 py-0.5 rounded">{tag}</span>
+												<Badge>{tag}</Badge>
 											{/each}
 										{/if}
 									</div>
@@ -296,7 +270,7 @@
 									<path d="M6 4l4 4-4 4" />
 								</svg>
 							</div>
-						</button>
+						</ListItem>
 					{/each}
 				</div>
 			{/if}
@@ -304,26 +278,22 @@
 		<!-- ── Plot Threads ──────────────────────────────────── -->
 		{:else}
 			{#if loading}
-				<div class="bg-surface rounded-lg border border-border-custom p-8 text-center text-sm text-text-dim">
-					Loading threads...
-				</div>
+				<EmptyState message="Loading threads..." variant="loading" />
 			{:else if threads.length === 0}
-				<div class="bg-surface rounded-lg border border-border-custom p-8 text-center text-sm text-text-dim">
-					No plot threads found.
-				</div>
+				<EmptyState message="No plot threads found." />
 			{:else}
 				<div class="space-y-4">
 					<!-- Active threads -->
 					{#if activeThreads.length}
 						<div class="space-y-2">
-							<p class="text-xs font-semibold text-text-dim uppercase tracking-wider px-1">Active</p>
+							<div class="px-1"><SectionLabel>Active</SectionLabel></div>
 							{#each activeThreads as thread}
 								{@const pct = threadProgress(thread)}
 								{@const next = nextThreshold(thread)}
-								<div class="bg-surface rounded-lg border border-border-custom overflow-hidden">
+								<div class="bg-surface rounded-[10px] border border-border-custom overflow-hidden">
 									<button
-										class="w-full flex items-start gap-3 px-4 py-3 hover:bg-surface2 transition-colors text-left"
-										on:click={() => (expandedThread = expandedThread === thread.thread_id ? null : thread.thread_id)}
+										class="w-full flex items-start gap-3 px-4 py-3 hover:bg-bg-subtle transition-colors text-left"
+										onclick={() => (expandedThread = expandedThread === thread.thread_id ? null : thread.thread_id)}
 									>
 										<div class="flex-1 min-w-0 space-y-2">
 											<div class="flex items-center gap-2 flex-wrap">
@@ -332,14 +302,13 @@
 													<span class="text-xs px-1.5 py-0.5 rounded {priorityStyle(thread.priority)}">{thread.priority.replace('_', ' ')}</span>
 												{/if}
 												{#if thread.thread_type}
-													<span class="text-xs bg-surface2 text-text-dim px-1.5 py-0.5 rounded">{thread.thread_type}</span>
+													<span class="text-xs bg-bg-subtle text-text-dim px-1.5 py-0.5 rounded">{thread.thread_type}</span>
 												{/if}
 											</div>
 											<!-- Progress bar -->
 											<div class="flex items-center gap-2">
-												<div class="flex-1 h-1.5 bg-surface2 rounded-full overflow-hidden">
-													<div class="h-full rounded-full transition-all"
-														style="width:{pct}%;background:{progressColor(pct)}"></div>
+												<div class="flex-1">
+													<ProgressBar value={pct} color={progressColor(pct)} height={6} />
 												</div>
 												<span class="text-xs text-text-dim shrink-0 font-mono">
 													{thread.current_counter}{next ? `/${next.value}` : ''}
@@ -370,7 +339,7 @@
 													<p class="text-xs text-text-dim mb-1">Keywords</p>
 													<div class="flex flex-wrap gap-1">
 														{#each thread.keywords as kw}
-															<span class="text-xs bg-surface2 text-text-dim px-1.5 py-0.5 rounded">{kw}</span>
+															<span class="text-xs bg-bg-subtle text-text-dim px-1.5 py-0.5 rounded">{kw}</span>
 														{/each}
 													</div>
 												</div>
@@ -398,9 +367,9 @@
 					<!-- Dormant threads -->
 					{#if dormantThreads.length}
 						<div class="space-y-2">
-							<p class="text-xs font-semibold text-text-dim uppercase tracking-wider px-1">Dormant</p>
+							<div class="px-1"><SectionLabel>Dormant</SectionLabel></div>
 							{#each dormantThreads as thread}
-								<div class="bg-surface rounded-lg border border-border-custom px-4 py-2.5 flex items-center gap-3">
+								<div class="bg-surface rounded-[10px] border border-border-custom px-4 py-2.5 flex items-center gap-3">
 									<span class="text-sm text-text-dim">{thread.name}</span>
 									{#if thread.priority}
 										<span class="text-xs px-1.5 py-0.5 rounded {priorityStyle(thread.priority)}">{thread.priority.replace('_', ' ')}</span>
@@ -413,9 +382,9 @@
 
 					<!-- Resolved threads (collapsed) -->
 					{#if resolvedThreads.length}
-						<details class="bg-surface rounded-lg border border-border-custom overflow-hidden">
+						<details class="bg-surface rounded-[10px] border border-border-custom overflow-hidden">
 							<summary class="flex items-center justify-between px-4 py-2.5 cursor-pointer
-								hover:bg-surface2 transition-colors list-none text-sm text-text-dim">
+								hover:bg-bg-subtle transition-colors list-none text-sm text-text-dim">
 								<span>Resolved ({resolvedThreads.length})</span>
 								<svg class="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
 									<path d="M4 6l4 4 4-4" />
@@ -425,7 +394,7 @@
 								{#each resolvedThreads as thread}
 									<div class="px-4 py-2 flex items-center gap-2 text-sm text-text-dim">
 										<span class="line-through">{thread.name}</span>
-										<span class="text-xs bg-success/10 text-success px-1.5 py-0.5 rounded ml-auto">resolved</span>
+										<span class="ml-auto"><Badge color="var(--color-success)" bg="var(--color-success-soft)">resolved</Badge></span>
 									</div>
 								{/each}
 							</div>

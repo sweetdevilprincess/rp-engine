@@ -18,7 +18,7 @@ from rp_engine.models.branch import (
     CheckpointInfo,
     CheckpointRestoreResponse,
 )
-from rp_engine.services.context_engine import trust_stage
+from rp_engine.utils.trust import trust_stage
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +61,16 @@ class BranchManager:
             [rp_folder],
         )
 
+        # Batch exchange count query instead of N individual queries
+        count_rows = await self.db.fetch_all(
+            "SELECT branch, COUNT(*) as cnt FROM exchanges WHERE rp_folder = ? GROUP BY branch",
+            [rp_folder],
+        )
+        exchange_counts = {r["branch"]: r["cnt"] for r in count_rows}
+
         active_branch = None
         branches: list[BranchInfo] = []
         for row in rows:
-            count = await self.db.fetch_val(
-                "SELECT COUNT(*) FROM exchanges WHERE rp_folder = ? AND branch = ?",
-                [rp_folder, row["name"]],
-            )
             info = BranchInfo(
                 name=row["name"],
                 rp_folder=rp_folder,
@@ -77,7 +80,7 @@ class BranchManager:
                 description=row.get("description"),
                 is_active=bool(row.get("is_active")),
                 created_at=row.get("created_at"),
-                exchange_count=count or 0,
+                exchange_count=exchange_counts.get(row["name"], 0),
             )
             branches.append(info)
             if info.is_active:

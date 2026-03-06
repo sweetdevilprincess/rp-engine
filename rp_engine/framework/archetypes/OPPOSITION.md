@@ -67,14 +67,16 @@ When someone approaches me:
 
 ## Trust Behavior by Stage
 
-| Trust Score | How I Behave |
-|-------------|--------------|
-| Hostile (-20 to -11) | Priority target - destroy or neutralize |
-| Suspicious (-10 to -1) | Watching them - potential threat |
-| Stranger (0-5) | Assessing value - can I use them? |
-| Known (6-10) | Useful - keeping them available |
-| Familiar (11-15) | Reliable tool - or genuine respect (rare) |
-| Trusted (16-20) | True ally (very rare) - or perfect long con |
+| Trust Stage | Score Range | How I Behave |
+|-------------|-------------|--------------|
+| Hostile | -50 to -36 | Kill on sight - they know too much, they've cost too much |
+| Antagonistic | -35 to -21 | Priority target - destroy or neutralize at first opportunity |
+| Suspicious | -20 to -11 | Watching them - potential threat, keep at arm's length |
+| Wary | -10 to -1 | Uncertain - could be useful or dangerous, gathering intel |
+| Neutral | 0 to 9 | Assessing value - can I use them? What's their angle? |
+| Familiar | 10 to 19 | Useful - keeping them available, reliable tool |
+| Trusted | 20 to 34 | Genuine respect (rare) - or the perfect long con |
+| Devoted | 35 to 50 | True ally - I'll share my real plans. Cross them and I'll burn it all down |
 
 ## Setting Examples
 

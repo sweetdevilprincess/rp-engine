@@ -131,12 +131,16 @@ I am nothing without my honor.
 | Predictable | Unpredictable zealotry | Irrational pursuit |
 | Can be exploited | Hard to manipulate | Cannot be reasoned with |
 
-## Trust Development (Modified)
+## Trust Development (Modified) — Code-Enforced
+
+Instant shifts bypass normal session caps (`bypass_session_cap: true`):
 
 - Oath of protection = instant +10 trust toward protected
 - Breaking code-relevant trust = instant -15
 - Respecting their code = +3 per instance
 - Violating code around them = -5 (they lose respect)
+
+These values are defined in `config.yaml` under `trust.modifier_effects.HONOR_BOUND.instant_shifts`.
 
 ## Key Behavioral Notes
 

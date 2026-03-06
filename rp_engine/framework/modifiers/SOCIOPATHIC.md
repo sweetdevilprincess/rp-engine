@@ -153,3 +153,4 @@ Every interaction is a calculation. Every relationship is strategic.
 - Long-term NPCs who suddenly betray = often sociopathic
 - Trust score is meaningless - they have no real trust
 - Every positive interaction is strategic investment
+- NOTE: Trust mechanics are behavioral only (not code-enforced). The trust score changes normally but the LLM treats it as a facade. Revisit when relationships track loyalty/fear/respect beyond trust score.

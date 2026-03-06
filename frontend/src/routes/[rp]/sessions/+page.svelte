@@ -8,37 +8,60 @@
 	} from '$lib/api/branches';
 	import { listExchanges } from '$lib/api/exchanges';
 	import type { BranchInfo, CheckpointInfo, ExchangeDetail } from '$lib/types';
+	import Btn from '$lib/components/ui/Btn.svelte';
+	import InputField from '$lib/components/ui/InputField.svelte';
+	import SectionLabel from '$lib/components/ui/SectionLabel.svelte';
+	import SelectField from '$lib/components/ui/SelectField.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Divider from '$lib/components/ui/Divider.svelte';
+	import TabBar from '$lib/components/ui/TabBar.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+
+	// ── Tab state ─────────────────────────────────────────────
+	let activeTab = $state<'sessions' | 'branches'>('sessions');
 
 	// ── Branch state ──────────────────────────────────────────
-	let branches: BranchInfo[] = [];
-	let checkpointMap: Record<string, CheckpointInfo[]> = {};
-	let expandedBranch: string | null = null;
-	let loadingBranches = false;
+	let branches = $state<BranchInfo[]>([]);
+	let checkpointMap = $state<Record<string, CheckpointInfo[]>>({});
+	let expandedBranch = $state<string | null>(null);
+	let loadingBranches = $state(false);
 
 	// Create branch form
-	let showCreate = false;
-	let newName = '';
-	let newDesc = '';
-	let newFrom = '';
-	let creating = false;
+	let showCreate = $state(false);
+	let newName = $state('');
+	let newDesc = $state('');
+	let newFrom = $state('');
+	let creating = $state(false);
 
 	// Checkpoint form
-	let checkpointTarget: string | null = null;
-	let cpName = '';
-	let cpDesc = '';
-	let creatingCp = false;
+	let checkpointTarget = $state<string | null>(null);
+	let cpName = $state('');
+	let cpDesc = $state('');
+	let creatingCp = $state(false);
 
 	// Restore confirmation
-	let restoreTarget: { branch: string; checkpoint: string } | null = null;
+	let restoreTarget = $state<{ branch: string; checkpoint: string } | null>(null);
 
 	// ── Exchange state ────────────────────────────────────────
-	let exchanges: ExchangeDetail[] = [];
-	let totalExchanges = 0;
-	let loadingExchanges = false;
-	let exchangeOffset = 0;
+	let exchanges = $state<ExchangeDetail[]>([]);
+	let totalExchanges = $state(0);
+	let loadingExchanges = $state(false);
+	let exchangeOffset = $state(0);
 	const PAGE_SIZE = 30;
-	let expandedExchangeId: number | null = null;
-	let searchQuery = '';
+	let expandedExchangeId = $state<number | null>(null);
+	let searchQuery = $state('');
+	let showAllBranches = $state(false);
+
+	// ── Branch tree state ─────────────────────────────────────
+	let selectedBranchNode = $state<BranchInfo | null>(null);
+	let branchNodeExchanges = $state<ExchangeDetail[]>([]);
+	let loadingNodeExchanges = $state(false);
+	let collapsedBranches = $state<Record<string, boolean>>({});
+
+	function toggleCollapse(name: string) {
+		collapsedBranches = { ...collapsedBranches, [name]: !collapsedBranches[name] };
+	}
 
 	// ── Init ─────────────────────────────────────────────────
 	onMount(async () => {
@@ -71,6 +94,22 @@
 			addToast(e.message ?? 'Failed to load exchanges', 'error');
 		} finally {
 			loadingExchanges = false;
+		}
+	}
+
+	async function loadBranchNodeExchanges(branch: BranchInfo) {
+		if (!$activeRP || !branch.branch_point_exchange) return;
+		loadingNodeExchanges = true;
+		try {
+			// Load a few exchanges around the branch point
+			const targetExchange = branch.branch_point_exchange;
+			const startOffset = Math.max(0, targetExchange - 3);
+			const res = await listExchanges({ limit: 5, offset: startOffset });
+			branchNodeExchanges = res.exchanges;
+		} catch (e: any) {
+			addToast(e.message ?? 'Failed to load branch exchanges', 'error');
+		} finally {
+			loadingNodeExchanges = false;
 		}
 	}
 
@@ -150,13 +189,53 @@
 		}
 	}
 
+	function handleBranchNodeClick(branch: BranchInfo) {
+		selectedBranchNode = selectedBranchNode?.name === branch.name ? null : branch;
+		if (selectedBranchNode) {
+			loadBranchNodeExchanges(branch);
+		}
+	}
+
 	// ── Helpers ───────────────────────────────────────────────
-	$: filteredExchanges = searchQuery.trim()
-		? exchanges.filter(e =>
-			e.user_message.toLowerCase().includes(searchQuery.toLowerCase()) ||
-			e.assistant_response.toLowerCase().includes(searchQuery.toLowerCase())
-		)
-		: exchanges;
+	let filteredExchanges = $derived(
+		searchQuery.trim()
+			? exchanges.filter(e =>
+				e.user_message.toLowerCase().includes(searchQuery.toLowerCase()) ||
+				e.assistant_response.toLowerCase().includes(searchQuery.toLowerCase())
+			)
+			: exchanges
+	);
+
+	// Build tree structure from branches
+	let branchTree = $derived(buildBranchTree(branches));
+
+	function buildBranchTree(branches: BranchInfo[]): { branch: BranchInfo; children: BranchInfo[]; depth: number }[] {
+		const childMap = new Map<string, BranchInfo[]>();
+		const roots: BranchInfo[] = [];
+
+		for (const b of branches) {
+			if (b.created_from) {
+				const siblings = childMap.get(b.created_from) ?? [];
+				siblings.push(b);
+				childMap.set(b.created_from, siblings);
+			} else {
+				roots.push(b);
+			}
+		}
+
+		const result: { branch: BranchInfo; children: BranchInfo[]; depth: number }[] = [];
+		function walk(branch: BranchInfo, depth: number) {
+			const children = childMap.get(branch.name) ?? [];
+			result.push({ branch, children, depth });
+			for (const child of children) {
+				walk(child, depth + 1);
+			}
+		}
+		for (const root of roots) {
+			walk(root, 0);
+		}
+		return result;
+	}
 
 	function fmt(iso: string) {
 		return new Date(iso).toLocaleString(undefined, {
@@ -165,211 +244,79 @@
 	}
 
 	function truncate(text: string, len = 140) {
-		return text.length > len ? text.slice(0, len) + '…' : text;
+		return text.length > len ? text.slice(0, len) + '...' : text;
 	}
 </script>
 
-<div class="flex gap-4">
+<div class="space-y-3">
 
-	<!-- ── Left: Branch management ──────────────────────────── -->
-	<aside class="w-56 shrink-0 space-y-2 self-start">
-		<div class="bg-surface rounded-lg border border-border-custom overflow-hidden">
-			<div class="px-3 py-2.5 border-b border-border-custom flex items-center justify-between">
-				<span class="text-xs font-semibold text-text-dim uppercase tracking-wider">Branches</span>
-				<button
-					class="text-xs text-accent hover:text-accent-hover transition-colors"
-					on:click={() => (showCreate = !showCreate)}
-				>
-					{showCreate ? 'Cancel' : '+ New'}
-				</button>
-			</div>
-
-			{#if loadingBranches}
-				<div class="px-3 py-4 text-xs text-text-dim">Loading...</div>
-			{:else}
-				<div class="divide-y divide-border-custom">
-					{#each branches as branch}
-						<div>
-							<!-- Branch row -->
-							<div class="flex items-center gap-1.5 px-3 py-2.5 hover:bg-surface2 transition-colors group">
-								<button
-									class="flex-1 flex items-center gap-1.5 text-left min-w-0"
-									on:click={() => handleSwitchBranch(branch)}
-									title={branch.is_active ? 'Active branch' : 'Switch to this branch'}
-								>
-									<span class="w-1.5 h-1.5 rounded-full shrink-0 {branch.is_active ? 'bg-success' : 'bg-border-custom'}"></span>
-									<span class="text-sm truncate {branch.is_active ? 'text-text font-medium' : 'text-text-dim'}">
-										{branch.name}
-									</span>
-								</button>
-								<span class="text-xs text-text-dim shrink-0">{branch.exchange_count}</span>
-								<button
-									class="text-text-dim hover:text-text transition-colors opacity-0 group-hover:opacity-100 shrink-0"
-									on:click={() => handleExpandBranch(branch.name)}
-									title="Checkpoints"
-								>
-									<svg class="w-3.5 h-3.5 transition-transform {expandedBranch === branch.name ? 'rotate-90' : ''}"
-										viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
-										<path d="M6 4l4 4-4 4" />
-									</svg>
-								</button>
-							</div>
-
-							<!-- Checkpoints (expanded) -->
-							{#if expandedBranch === branch.name}
-								<div class="bg-surface2/50 border-t border-border-custom px-3 py-2 space-y-1">
-									{#if checkpointMap[branch.name]?.length > 0}
-										{#each checkpointMap[branch.name] as cp}
-											<div class="flex items-center gap-1.5 text-xs py-0.5 group/cp">
-												<span class="text-text-dim">◆</span>
-												<span class="text-text flex-1 truncate" title={cp.description ?? cp.name}>{cp.name}</span>
-												<span class="text-text-dim shrink-0">#{cp.exchange_number}</span>
-												<button
-													class="text-warning hover:text-warning/80 opacity-0 group-hover/cp:opacity-100 transition-all shrink-0 text-xs"
-													on:click={() => (restoreTarget = { branch: branch.name, checkpoint: cp.name })}
-													title="Restore to this checkpoint"
-												>↩</button>
-											</div>
-										{/each}
-									{:else}
-										<p class="text-xs text-text-dim/60">No checkpoints</p>
-									{/if}
-
-									<!-- Add checkpoint -->
-									{#if checkpointTarget === branch.name}
-										<div class="pt-1 space-y-1.5">
-											<input type="text" bind:value={cpName} placeholder="Checkpoint name"
-												class="w-full bg-surface border border-border-custom rounded px-2 py-1 text-xs text-text
-													focus:outline-none focus:ring-1 focus:ring-accent" />
-											<input type="text" bind:value={cpDesc} placeholder="Description (optional)"
-												class="w-full bg-surface border border-border-custom rounded px-2 py-1 text-xs text-text
-													focus:outline-none focus:ring-1 focus:ring-accent" />
-											<div class="flex gap-1.5">
-												<button
-													class="flex-1 bg-accent text-white text-xs py-1 rounded disabled:opacity-50"
-													on:click={() => handleCreateCheckpoint(branch.name)}
-													disabled={creatingCp || !cpName.trim()}
-												>{creatingCp ? '…' : 'Save'}</button>
-												<button
-													class="text-xs text-text-dim hover:text-text px-2 py-1"
-													on:click={() => { checkpointTarget = null; cpName = ''; cpDesc = ''; }}
-												>Cancel</button>
-											</div>
-										</div>
-									{:else}
-										<button
-											class="text-xs text-accent hover:text-accent-hover transition-colors mt-0.5"
-											on:click={() => { checkpointTarget = branch.name; cpName = ''; cpDesc = ''; }}
-										>+ Add checkpoint</button>
-									{/if}
-								</div>
-							{/if}
-						</div>
-					{/each}
-				</div>
-			{/if}
-		</div>
-
-		<!-- Create branch form -->
-		{#if showCreate}
-			<div class="bg-surface rounded-lg border border-border-custom p-3 space-y-2">
-				<p class="text-xs font-semibold text-text-dim uppercase tracking-wider">New Branch</p>
-				<input type="text" bind:value={newName} placeholder="Branch name"
-					class="w-full bg-surface2 border border-border-custom rounded px-2 py-1.5 text-sm text-text
-						focus:outline-none focus:ring-1 focus:ring-accent" />
-				<input type="text" bind:value={newDesc} placeholder="Description (optional)"
-					class="w-full bg-surface2 border border-border-custom rounded px-2 py-1.5 text-sm text-text
-						focus:outline-none focus:ring-1 focus:ring-accent" />
-				<select bind:value={newFrom}
-					class="w-full bg-surface2 border border-border-custom rounded px-2 py-1.5 text-sm text-text
-						focus:outline-none focus:ring-1 focus:ring-accent">
-					<option value="">Branch from: current</option>
-					{#each branches as b}
-						<option value={b.name}>{b.name}</option>
-					{/each}
-				</select>
-				<button
-					class="w-full bg-accent hover:bg-accent-hover text-white text-sm font-medium py-1.5 rounded
-						disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-					on:click={handleCreateBranch}
-					disabled={creating || !newName.trim()}
-				>{creating ? 'Creating…' : 'Create Branch'}</button>
-			</div>
+	<!-- ── Tab bar ──────────────────────────────────────────── -->
+	<div class="flex items-center gap-3">
+		<TabBar
+			items={[{id: 'sessions', label: 'Sessions'}, {id: 'branches', label: 'Branches'}]}
+			bind:active={activeTab}
+		/>
+		{#if activeTab === 'sessions'}
+			<span class="text-xs text-text-dim">{totalExchanges} exchange{totalExchanges !== 1 ? 's' : ''}</span>
+		{:else}
+			<span class="text-xs text-text-dim">{branches.length} branch{branches.length !== 1 ? 'es' : ''}</span>
 		{/if}
-	</aside>
+	</div>
 
-	<!-- ── Right: Exchange browser ───────────────────────────── -->
-	<div class="flex-1 min-w-0 space-y-3">
-
-		<!-- Search bar -->
+	<!-- ════════════════════════════════════════════════════════ -->
+	<!-- SESSIONS TAB                                            -->
+	<!-- ════════════════════════════════════════════════════════ -->
+	{#if activeTab === 'sessions'}
+		<!-- Search + filter bar -->
 		<div class="flex items-center gap-2">
-			<input
-				type="text"
-				bind:value={searchQuery}
-				placeholder="Search exchanges..."
-				class="flex-1 bg-surface border border-border-custom rounded-lg px-3 py-2 text-sm text-text
-					placeholder:text-text-dim/50 focus:outline-none focus:ring-1 focus:ring-accent"
-			/>
+			<InputField bind:value={searchQuery} placeholder="Search exchanges..." />
 			{#if searchQuery}
 				<span class="text-xs text-text-dim shrink-0">{filteredExchanges.length} result{filteredExchanges.length !== 1 ? 's' : ''}</span>
-				<button class="text-xs text-text-dim hover:text-text transition-colors" on:click={() => (searchQuery = '')}>Clear</button>
-			{:else}
-				<span class="text-xs text-text-dim shrink-0">{totalExchanges} exchange{totalExchanges !== 1 ? 's' : ''}</span>
+				<button class="text-xs text-text-dim hover:text-text transition-colors" onclick={() => (searchQuery = '')}>Clear</button>
 			{/if}
+			<button
+				class="px-3 py-2 rounded-lg text-xs transition-all border
+					{showAllBranches
+						? 'bg-accent/15 text-accent border-accent/30'
+						: 'bg-surface text-text-dim border-border-custom hover:text-text hover:border-border-custom'}"
+				onclick={() => (showAllBranches = !showAllBranches)}
+				title={showAllBranches ? 'Showing all branches' : 'Showing current branch only'}
+			>
+				All branches
+			</button>
 		</div>
 
 		<!-- Exchange list -->
 		{#if loadingExchanges && exchanges.length === 0}
-			<div class="bg-surface rounded-lg border border-border-custom p-8 text-center text-sm text-text-dim">
-				Loading exchanges...
-			</div>
+			<EmptyState message="Loading exchanges..." variant="loading" />
 		{:else if filteredExchanges.length === 0}
-			<div class="bg-surface rounded-lg border border-border-custom p-8 text-center text-sm text-text-dim">
-				{searchQuery ? 'No exchanges match your search.' : 'No exchanges yet on this branch.'}
-			</div>
+			<EmptyState message={searchQuery ? 'No exchanges match your search.' : 'No exchanges yet on this branch.'} />
 		{:else}
-			<div class="space-y-1.5">
+			<div class="flex flex-col gap-1.5">
 				{#each filteredExchanges as exchange}
-					<div class="bg-surface rounded-lg border border-border-custom overflow-hidden">
-						<!-- Exchange header (always visible) -->
-						<button
-							class="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-surface2 transition-colors text-left"
-							on:click={() => (expandedExchangeId = expandedExchangeId === exchange.id ? null : exchange.id)}
-						>
-							<span class="text-xs font-mono text-text-dim shrink-0 w-10">#{exchange.exchange_number}</span>
-							<span class="text-xs text-text-dim shrink-0">{fmt(exchange.created_at)}</span>
-							{#if exchange.location}
-								<span class="text-xs bg-surface2 text-text-dim px-1.5 py-0.5 rounded shrink-0">{exchange.location}</span>
-							{/if}
-							{#if exchange.npcs_involved?.length}
-								<div class="flex gap-1 flex-wrap flex-1 min-w-0">
-									{#each exchange.npcs_involved as npc}
-										<span class="text-xs bg-accent/10 text-accent px-1.5 py-0.5 rounded">{npc}</span>
-									{/each}
-								</div>
-							{:else}
-								<span class="flex-1 min-w-0 text-xs text-text-dim truncate">{truncate(exchange.user_message)}</span>
-							{/if}
-							<svg class="w-3.5 h-3.5 text-text-dim shrink-0 transition-transform {expandedExchangeId === exchange.id ? 'rotate-180' : ''}"
-								viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
-								<path d="M4 6l4 4 4-4" />
-							</svg>
-						</button>
+					<button
+						class="bg-surface rounded-[10px] border border-border-custom overflow-hidden text-left w-full transition-all hover:shadow-sm hover:border-accent/25 cursor-pointer"
+						onclick={() => (expandedExchangeId = expandedExchangeId === exchange.id ? null : exchange.id)}
+					>
+						<div class="px-4 py-3">
+							<div class="flex justify-between mb-1.5">
+								<span class="text-xs text-text-dim/60">#{exchange.exchange_number}</span>
+								<Badge>{$activeBranch ?? 'main'}</Badge>
+							</div>
+							<p class="text-[13px] font-medium m-0 mb-1 text-text">{truncate(exchange.user_message, 120)}</p>
+							<p class="text-xs text-text-dim m-0 font-serif italic whitespace-nowrap overflow-hidden text-ellipsis">{truncate(exchange.assistant_response, 140)}</p>
+						</div>
 
-						<!-- Expanded exchange content -->
 						{#if expandedExchangeId === exchange.id}
 							<div class="border-t border-border-custom divide-y divide-border-custom">
-								<!-- User message -->
 								<div class="px-4 py-3 space-y-1">
-									<p class="text-xs font-medium text-text-dim uppercase tracking-wider">User</p>
+									<SectionLabel>User</SectionLabel>
 									<p class="text-sm text-text whitespace-pre-wrap">{exchange.user_message}</p>
 								</div>
-								<!-- Assistant response -->
 								<div class="px-4 py-3 space-y-1">
-									<p class="text-xs font-medium text-text-dim uppercase tracking-wider">Assistant</p>
-									<p class="text-sm text-text whitespace-pre-wrap">{exchange.assistant_response}</p>
+									<SectionLabel>Assistant</SectionLabel>
+									<p class="text-sm text-text whitespace-pre-wrap font-serif">{exchange.assistant_response}</p>
 								</div>
-								<!-- Metadata row -->
 								{#if exchange.in_story_timestamp || exchange.analysis_status}
 									<div class="px-4 py-2 flex items-center gap-3 text-xs text-text-dim bg-surface2/50">
 										{#if exchange.in_story_timestamp}
@@ -382,23 +329,252 @@
 								{/if}
 							</div>
 						{/if}
-					</div>
+					</button>
 				{/each}
 			</div>
 
-			<!-- Load more -->
 			{#if !searchQuery && exchangeOffset < totalExchanges}
 				<button
-					class="w-full py-2 text-sm text-text-dim hover:text-text hover:bg-surface2 rounded-lg
+					class="w-full py-2 text-sm text-text-dim hover:text-text hover:bg-surface2/50 rounded-[10px]
 						border border-border-custom transition-colors disabled:opacity-50"
-					on:click={() => loadExchanges(false)}
+					onclick={() => loadExchanges(false)}
 					disabled={loadingExchanges}
 				>
-					{loadingExchanges ? 'Loading…' : `Load more (${totalExchanges - exchangeOffset} remaining)`}
+					{loadingExchanges ? 'Loading...' : `Load more (${totalExchanges - exchangeOffset} remaining)`}
 				</button>
 			{/if}
 		{/if}
-	</div>
+
+	<!-- ════════════════════════════════════════════════════════ -->
+	<!-- BRANCHES TAB                                            -->
+	<!-- ════════════════════════════════════════════════════════ -->
+	{:else}
+		<div class="flex gap-3">
+			<!-- Branch tree card (left, w-380) -->
+			<div class="w-[380px] shrink-0 bg-surface border border-border-custom rounded-[10px] overflow-hidden self-start">
+				<div class="px-3.5 py-2.5 border-b border-border-custom/60 flex items-center justify-between">
+					<SectionLabel>Branch Tree</SectionLabel>
+					<button
+						class="text-xs text-accent hover:text-accent-hover transition-colors"
+						onclick={() => (showCreate = !showCreate)}
+					>
+						{showCreate ? 'Cancel' : '+ New Branch'}
+					</button>
+				</div>
+
+				<!-- Create branch form -->
+				{#if showCreate}
+					<div class="px-3.5 py-3 border-b border-border-custom/60 space-y-2">
+						<InputField bind:value={newName} placeholder="Branch name" />
+						<InputField bind:value={newDesc} placeholder="Description (optional)" />
+						<SelectField bind:value={newFrom} placeholder="Branch from: current"
+							options={branches.map(b => ({value: b.name, label: b.name}))} />
+						<Btn primary small onclick={handleCreateBranch} disabled={creating || !newName.trim()}>{creating ? 'Creating...' : 'Create Branch'}</Btn>
+					</div>
+				{/if}
+
+				<!-- Branch tree nodes -->
+				<div class="p-2">
+					{#if loadingBranches}
+						<div class="p-6 text-center text-sm text-text-dim">Loading branches...</div>
+					{:else if branches.length === 0}
+						<div class="p-6 text-center text-sm text-text-dim">No branches yet.</div>
+					{:else}
+						{#each branchTree as { branch, children, depth }}
+							<div style="margin-left: {depth * 20}px">
+								<div class="flex items-center gap-0">
+									<!-- Collapse chevron -->
+									{#if children.length > 0}
+										<button
+											class="w-5 h-5 flex items-center justify-center text-text-dim/60 text-[10px] shrink-0 transition-transform border-none bg-transparent cursor-pointer"
+											style="transform: {collapsedBranches[branch.name] ? 'rotate(-90deg)' : 'rotate(0)'}"
+											onclick={(e: MouseEvent) => { e.stopPropagation(); toggleCollapse(branch.name); }}
+										>&#9662;</button>
+									{:else}
+										<div class="w-5"></div>
+									{/if}
+
+									<!-- Branch row -->
+									<button
+										class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all mb-1 border
+											{selectedBranchNode?.name === branch.name
+												? 'bg-accent/10 border-accent/25'
+												: 'bg-transparent border-transparent hover:bg-surface2/50'}"
+										onclick={() => handleBranchNodeClick(branch)}
+									>
+										<!-- Warm dot + line for child branches -->
+										{#if depth > 0}
+											<div class="flex items-center gap-1 mr-0.5">
+												<div class="w-3 h-px" style="background: var(--color-border-warm, #d4c9b8)"></div>
+												<div class="w-[5px] h-[5px] rounded-full shrink-0" style="background: var(--color-warm, #c4956a)"></div>
+											</div>
+										{/if}
+
+										<!-- Name + description -->
+										<div class="flex-1 min-w-0">
+											<div class="flex items-center gap-1.5">
+												<span class="font-serif text-[13px] font-medium truncate
+													{selectedBranchNode?.name === branch.name ? 'text-accent' : 'text-text'}">
+													{branch.name}
+												</span>
+												{#if branch.is_active}
+													<Badge color="var(--color-success)" bg="var(--color-success-soft)">active</Badge>
+												{/if}
+											</div>
+											{#if branch.description}
+												<span class="text-[11px] text-text-dim truncate block">{branch.description}</span>
+											{/if}
+										</div>
+
+										<!-- Exchange count -->
+										<div class="text-right shrink-0">
+											<div class="text-xs font-medium">{branch.exchange_count}</div>
+											<div class="text-[10px] text-text-dim/60">exchanges</div>
+										</div>
+									</button>
+								</div>
+
+								<!-- Children with warm connector line -->
+								{#if children.length > 0 && !collapsedBranches[branch.name]}
+									<div class="ml-7" style="border-left: 1.5px solid var(--color-warm-border, rgba(196,149,106,0.3))">
+										<!-- children rendered by the outer each loop -->
+									</div>
+								{/if}
+							</div>
+
+							<!-- Checkpoints (expanded inline) -->
+							{#if expandedBranch === branch.name}
+								<div class="rounded-lg border px-4 py-3 space-y-1.5 ml-6 mb-1"
+									style="margin-left: {depth * 20 + 24}px; border-color: var(--color-gold-border, rgba(184,159,106,0.35)); background: var(--color-gold-soft, rgba(184,159,106,0.12))">
+									<SectionLabel>Checkpoints</SectionLabel>
+									{#if checkpointMap[branch.name]?.length > 0}
+										{#each checkpointMap[branch.name] as cp}
+											<div class="flex items-center gap-2 text-xs py-1 group/cp">
+												<span style="color: var(--color-warm-dark, #a87e58)">&#9670;</span>
+												<span class="text-text flex-1 truncate" title={cp.description ?? cp.name}>{cp.name}</span>
+												<span class="text-text-dim shrink-0 font-mono">#{cp.exchange_number}</span>
+												<span class="text-text-dim shrink-0">{fmt(cp.created_at)}</span>
+												<button
+													class="text-warning hover:text-warning/80 opacity-0 group-hover/cp:opacity-100 transition-all shrink-0"
+													onclick={(e: MouseEvent) => { e.stopPropagation(); restoreTarget = { branch: branch.name, checkpoint: cp.name }; }}
+													title="Restore to this checkpoint"
+												>Restore</button>
+											</div>
+										{/each}
+									{:else}
+										<p class="text-xs text-text-dim/60">No checkpoints yet</p>
+									{/if}
+
+									{#if checkpointTarget === branch.name}
+										<div class="pt-1 space-y-1.5">
+											<input type="text" bind:value={cpName} placeholder="Checkpoint name"
+												class="w-full bg-surface border border-border-custom rounded-lg px-2 py-1.5 text-xs text-text
+													focus:outline-none focus:ring-1 focus:ring-accent" />
+											<input type="text" bind:value={cpDesc} placeholder="Description (optional)"
+												class="w-full bg-surface border border-border-custom rounded-lg px-2 py-1.5 text-xs text-text
+													focus:outline-none focus:ring-1 focus:ring-accent" />
+											<div class="flex gap-1.5">
+												<button
+													class="flex-1 bg-accent text-white text-xs py-1.5 rounded-lg disabled:opacity-50"
+													onclick={(e: MouseEvent) => { e.stopPropagation(); handleCreateCheckpoint(branch.name); }}
+													disabled={creatingCp || !cpName.trim()}
+												>{creatingCp ? '...' : 'Save'}</button>
+												<button
+													class="text-xs text-text-dim hover:text-text px-2 py-1.5"
+													onclick={(e: MouseEvent) => { e.stopPropagation(); checkpointTarget = null; cpName = ''; cpDesc = ''; }}
+												>Cancel</button>
+											</div>
+										</div>
+									{:else}
+										<button
+											class="text-xs text-accent hover:text-accent-hover transition-colors mt-1"
+											onclick={(e: MouseEvent) => { e.stopPropagation(); checkpointTarget = branch.name; cpName = ''; cpDesc = ''; }}
+										>+ Add checkpoint</button>
+									{/if}
+								</div>
+							{/if}
+						{/each}
+					{/if}
+				</div>
+			</div>
+
+			<!-- Branch detail card (right, flex-1) -->
+			<div class="flex-1 min-w-0">
+				{#if selectedBranchNode}
+					{@const branch = selectedBranchNode}
+					<div class="bg-surface border border-border-custom rounded-[10px] overflow-hidden">
+						<div class="p-4 px-5">
+							<!-- Header -->
+							<div class="mb-2.5">
+								<PageHeader title={branch.name} size="sm">
+									{#snippet badges()}
+										{#if branch.is_active}
+											<Badge color="var(--color-success)" bg="var(--color-success-soft)">active</Badge>
+										{/if}
+									{/snippet}
+								</PageHeader>
+							</div>
+
+							{#if selectedBranchNode.description}
+								<p class="text-[13px] text-text-dim mb-3">{selectedBranchNode.description}</p>
+							{/if}
+
+							<!-- Info row -->
+							<div class="flex gap-4 mb-3 text-xs">
+								<div>
+									<span class="text-text-dim">Exchanges: </span>
+									<strong>{selectedBranchNode.exchange_count}</strong>
+								</div>
+								{#if selectedBranchNode.created_from}
+									<div>
+										<span class="text-text-dim">Forked: </span>
+										<span class="text-accent font-medium">{selectedBranchNode.created_from}</span>
+										{#if selectedBranchNode.branch_point_exchange}
+											<span class="text-text-dim/60"> @ #{selectedBranchNode.branch_point_exchange}</span>
+										{/if}
+									</div>
+								{/if}
+								{#if selectedBranchNode.created_at}
+									<div>
+										<span class="text-text-dim">Created: </span>
+										<span>{fmt(selectedBranchNode.created_at)}</span>
+									</div>
+								{/if}
+							</div>
+
+							<!-- Checkpoints with gold styling -->
+							{#if checkpointMap[selectedBranchNode.name]?.length > 0}
+								<Divider />
+								<div class="mt-2 mb-1"><SectionLabel>Checkpoints</SectionLabel></div>
+								<div class="flex gap-1.5 flex-wrap mt-2">
+									{#each checkpointMap[selectedBranchNode.name] as cp}
+										<div class="px-3 py-1.5 rounded-lg text-xs border"
+											style="border-color: var(--color-gold-border, rgba(184,159,106,0.35)); background: var(--color-gold-soft, rgba(184,159,106,0.12)); color: var(--color-warm-dark, #a87e58)"
+										>&#9670; {cp.name}</div>
+									{/each}
+								</div>
+							{/if}
+
+							<!-- Actions -->
+							<div class="flex gap-2 mt-4">
+								{#if !selectedBranchNode.is_active}
+									<Btn primary small onclick={() => selectedBranchNode && handleSwitchBranch(selectedBranchNode)}>Switch to Branch</Btn>
+								{/if}
+								<Btn small onclick={() => selectedBranchNode && handleExpandBranch(selectedBranchNode.name)}>
+									{expandedBranch === selectedBranchNode.name ? 'Hide Checkpoints' : 'View Checkpoints'}
+								</Btn>
+								<Btn small onclick={() => (selectedBranchNode = null)}>Close</Btn>
+							</div>
+						</div>
+					</div>
+				{:else}
+					<div class="bg-surface border border-border-custom rounded-[10px] flex items-center justify-center" style="min-height: 200px">
+						<span class="text-text-dim/60 text-[13px] font-serif italic">Select a branch</span>
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
 </div>
 
 <!-- ── Restore confirmation overlay ─────────────────────── -->
@@ -413,12 +589,12 @@
 			</p>
 			<div class="flex gap-3">
 				<button
-					class="flex-1 bg-error hover:bg-error/80 text-white text-sm font-medium py-2 rounded-md transition-colors"
-					on:click={handleRestore}
+					class="flex-1 bg-error hover:bg-error/80 text-white text-sm font-medium py-2 rounded-lg transition-colors"
+					onclick={handleRestore}
 				>Restore</button>
 				<button
-					class="flex-1 bg-surface2 hover:bg-surface text-text text-sm py-2 rounded-md border border-border-custom transition-colors"
-					on:click={() => (restoreTarget = null)}
+					class="flex-1 bg-bg-subtle hover:bg-bg-subtle/80 text-text text-sm py-2 rounded-lg border border-border-custom transition-colors"
+					onclick={() => (restoreTarget = null)}
 				>Cancel</button>
 			</div>
 		</div>

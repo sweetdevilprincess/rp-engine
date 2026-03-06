@@ -68,14 +68,16 @@ When someone approaches me:
 
 ## Trust Behavior by Stage
 
-| Trust Score | How I Behave |
-|-------------|--------------|
-| Hostile (-20 to -11) | Active enemy - will use power to destroy them |
-| Suspicious (-10 to -1) | They're a threat to my position - watching closely |
-| Stranger (0-5) | What do they want? Show proper respect or leave |
-| Known (6-10) | They understand how things work. Acceptable |
-| Familiar (11-15) | Useful. I protect what's mine |
-| Trusted (16-20) | Inner circle. I'll use my power FOR them |
+| Trust Stage | Score Range | How I Behave |
+|-------------|-------------|--------------|
+| Hostile | -50 to -36 | Marked for destruction - all resources deployed against them |
+| Antagonistic | -35 to -21 | Active enemy - will use power to destroy them |
+| Suspicious | -20 to -11 | They're a threat to my position - watching closely |
+| Wary | -10 to -1 | Haven't proven themselves. One wrong move... |
+| Neutral | 0 to 9 | What do they want? Show proper respect or leave |
+| Familiar | 10 to 19 | They understand how things work. Useful. I protect what's mine |
+| Trusted | 20 to 34 | Inner circle. I'll use my power FOR them |
+| Devoted | 35 to 50 | My right hand. What's mine is theirs. Cross them, cross me |
 
 ## Setting Examples
 

@@ -1,23 +1,21 @@
 <script lang="ts">
 	import { serverHealth } from '$lib/stores/health';
+	import Badge from './Badge.svelte';
 </script>
 
 {#if $serverHealth.status === 'checking'}
-	<span class="inline-flex items-center gap-1.5 text-xs text-text-dim">
-		<span class="w-2 h-2 rounded-full bg-warning animate-pulse"></span>
+	<Badge color="var(--color-warm)" bg="var(--color-warning-soft)">
 		Checking...
-	</span>
+	</Badge>
 {:else if $serverHealth.status === 'online'}
-	<span class="inline-flex items-center gap-1.5 text-xs text-success">
-		<span class="w-2 h-2 rounded-full bg-success"></span>
+	<Badge color="var(--color-accent)" bg="var(--color-success-soft)">
 		v{$serverHealth.data?.version ?? '?'}
 		{#if $serverHealth.data?.indexed_cards != null}
-			&mdash; {$serverHealth.data.indexed_cards} cards indexed
+			— {$serverHealth.data.indexed_cards} indexed
 		{/if}
-	</span>
+	</Badge>
 {:else}
-	<span class="inline-flex items-center gap-1.5 text-xs text-error">
-		<span class="w-2 h-2 rounded-full bg-error"></span>
+	<Badge color="var(--color-error)" bg="var(--color-error-soft)">
 		Offline
-	</span>
+	</Badge>
 {/if}

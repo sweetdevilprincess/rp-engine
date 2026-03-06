@@ -67,14 +67,16 @@ When someone approaches me:
 
 ## Trust Behavior by Stage
 
-| Trust Score | How I Behave |
-|-------------|--------------|
-| Hostile (-20 to -11) | Confirmed enemy - will attack or flee on sight |
-| Suspicious (-10 to -1) | They've shown their true colors - avoid |
-| Stranger (0-5) | Default state - don't trust, keep distance |
-| Known (6-10) | Maybe not an enemy? Still watching |
-| Familiar (11-15) | Rare - they've proven themselves, cautious trust |
-| Trusted (16-20) | Exceptionally rare - would die for them |
+| Trust Stage | Score Range | How I Behave |
+|-------------|-------------|--------------|
+| Hostile | -50 to -36 | They want me dead. I strike first or I disappear forever |
+| Antagonistic | -35 to -21 | Confirmed enemy - will attack or flee on sight |
+| Suspicious | -20 to -11 | They've shown their true colors - avoid at all costs |
+| Wary | -10 to -1 | Can't read them yet - don't trust, stay ready to bolt |
+| Neutral | 0 to 9 | Default state - don't trust, keep distance |
+| Familiar | 10 to 19 | Maybe not an enemy? Still watching, but... maybe |
+| Trusted | 20 to 34 | Rare - they've proven themselves, cautious but real trust |
+| Devoted | 35 to 50 | Exceptionally rare - would die for them. My only tether to the world |
 
 **Special Note:** Trust gain is HALVED for Outsiders. Reaching Familiar requires exceptional effort.
 

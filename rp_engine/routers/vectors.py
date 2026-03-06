@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from rp_engine.database import Database
-from rp_engine.dependencies import get_db, get_vector_search
+from rp_engine.dependencies import get_db, get_lance_store, get_vector_search
 from rp_engine.services.vector_search import VectorSearch
 from rp_engine.utils.text import sanitize_fts_query
 
@@ -162,36 +162,72 @@ async def get_vector_stats(
     cond = "WHERE rp_folder = ?" if rp_folder else ""
     params = [rp_folder] if rp_folder else []
 
-    rows = await db.fetch_all(
-        f"SELECT id, file_path, content, embedding FROM vectors {cond}",
+    # SQL aggregates — avoid loading all content BLOBs into memory
+    agg = await db.fetch_one(
+        f"""SELECT COUNT(*) as total,
+                   SUM(LENGTH(content)) as total_chars,
+                   COUNT(DISTINCT file_path) as total_files
+            FROM vectors {cond}""",
         params,
     )
-
-    total = len(rows)
-    with_embed = sum(1 for r in rows if not _is_zero_vector(r["embedding"]))
-    total_chars = sum(len(r["content"]) for r in rows)
+    total = agg["total"] if agg else 0
+    total_chars = agg["total_chars"] or 0 if agg else 0
+    total_files = agg["total_files"] if agg else 0
     avg_size = total_chars / total if total > 0 else 0.0
-    files_with_chunks = {r["file_path"] for r in rows if r["file_path"]}
 
-    # Cards in story_cards that have no vectors
-    card_cond = "WHERE rp_folder = ?" if rp_folder else ""
-    card_rows = await db.fetch_all(
-        f"SELECT file_path FROM story_cards {card_cond}",
+    # Embedding check still needs BLOB data, but only embedding column
+    embed_rows = await db.fetch_all(
+        f"SELECT embedding FROM vectors {cond}",
         params,
     )
-    cards_without = [
-        r["file_path"] for r in card_rows
-        if r["file_path"] not in files_with_chunks
-    ]
+    with_embed = sum(1 for r in embed_rows if not _is_zero_vector(r["embedding"]))
+
+    # Cards without vectors — use LEFT JOIN
+    card_cond = "AND sc.rp_folder = ?" if rp_folder else ""
+    card_params = params if rp_folder else []
+    cards_without_rows = await db.fetch_all(
+        f"""SELECT sc.file_path FROM story_cards sc
+            LEFT JOIN vectors v ON sc.file_path = v.file_path
+            WHERE v.id IS NULL {card_cond}""",
+        card_params,
+    )
+    cards_without = [r["file_path"] for r in cards_without_rows]
 
     return VectorStats(
         total_chunks=total,
         chunks_with_embeddings=with_embed,
         chunks_without_embeddings=total - with_embed,
-        total_files=len(files_with_chunks),
+        total_files=total_files,
         avg_chunk_size=round(avg_size, 1),
         cards_without_vectors=cards_without,
     )
+
+
+@router.get("/exchange-chunks")
+async def list_exchange_chunks(
+    rp_folder: str | None = Query(None),
+    branch: str = Query("main"),
+    limit: int = Query(200, le=1000),
+    lance_store=Depends(get_lance_store),
+):
+    """List exchange vector chunks from LanceDB."""
+    if lance_store is None:
+        return []
+    return await lance_store.list_exchange_chunks(rp_folder, branch, limit)
+
+
+@router.post("/reindex-exchanges")
+async def reindex_exchanges(
+    rp_folder: str | None = Query(None),
+    branch: str = Query("main"),
+    db: Database = Depends(get_db),
+    lance_store=Depends(get_lance_store),
+):
+    """Re-embed all exchanges into LanceDB. Runs async, doesn't block other requests."""
+    if lance_store is None:
+        raise HTTPException(503, detail="LanceDB not available")
+    result = await lance_store.reindex_exchanges(db, rp_folder, branch)
+    return result
 
 
 @router.post("/search-debug", response_model=list[DebugSearchResult])
@@ -207,7 +243,7 @@ async def search_debug(
 
     rp_folder = body.rp_folder
     limit = min(body.limit, 50)
-    _RRF_K = 60
+    from rp_engine.services.vector_search import _RRF_K
 
     # --- Vector search ---
     vector_scores: dict[int, float] = {}

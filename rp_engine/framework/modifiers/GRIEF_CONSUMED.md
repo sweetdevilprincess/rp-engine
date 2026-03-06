@@ -158,9 +158,9 @@ Someone has to pay. Someone will pay.
 - **GRIEF + OBSESSIVE:** May transfer obsession to revenge/memory
 - **GRIEF + ADDICTED:** May turn to substances to cope
 
-## Trust During Grief
+## Trust During Grief — Code-Enforced
 
-- Trust gains/losses amplified by emotion
+- Trust gains/losses amplified 1.5x (`gain_multiplier: 1.5`, `loss_multiplier: 1.5`)
 - May lash out at trusted people irrationally
 - May push away those trying to help
 - Recovery restores normal trust mechanics

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from rp_engine.utils.json_helpers import safe_parse_json
+
 from rp_engine.database import PRIORITY_ANALYSIS, PRIORITY_EXCHANGE, Database
 from rp_engine.models.custom_state import (
     CustomStateSchema,
@@ -21,6 +23,27 @@ from rp_engine.services.state_entry_resolver import StateEntryResolver
 logger = logging.getLogger(__name__)
 
 PRESETS_DIR = Path(__file__).parent.parent / "presets"
+
+# Module-level preset cache: {file_path: (mtime, parsed_data)}
+_preset_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _load_preset(path: Path) -> dict | None:
+    """Load a preset YAML file with mtime caching."""
+    key = str(path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    cached = _preset_cache.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        _preset_cache[key] = (mtime, data)
+        return data
+    except Exception:
+        return None
 
 
 class CustomStateManager:
@@ -183,24 +206,21 @@ class CustomStateManager:
         presets = []
         if PRESETS_DIR.exists():
             for f in PRESETS_DIR.glob("*.yaml"):
-                try:
-                    data = yaml.safe_load(f.read_text(encoding="utf-8"))
+                data = _load_preset(f)
+                if data:
                     presets.append(PresetInfo(
                         name=f.stem,
                         description=data.get("description"),
                         schema_count=len(data.get("schemas", [])),
                     ))
-                except Exception:
-                    continue
         return presets
 
     async def apply_preset(self, preset_name: str, rp_folder: str) -> list[CustomStateSchema]:
         """Apply a preset template to an RP folder."""
         preset_path = PRESETS_DIR / f"{preset_name}.yaml"
-        if not preset_path.exists():
+        data = _load_preset(preset_path)
+        if data is None:
             raise ValueError(f"Preset '{preset_name}' not found")
-
-        data = yaml.safe_load(preset_path.read_text(encoding="utf-8"))
         schemas_data = data.get("schemas", [])
         created = []
 
@@ -230,12 +250,7 @@ class CustomStateManager:
 
     @staticmethod
     def _row_to_schema(row: dict) -> CustomStateSchema:
-        config = None
-        if row.get("config"):
-            try:
-                config = json.loads(row["config"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        config = safe_parse_json(row.get("config"), default=None)
 
         return CustomStateSchema(
             id=row["id"],

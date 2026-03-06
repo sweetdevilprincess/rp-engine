@@ -154,6 +154,12 @@ async def update_config(body: ConfigUpdate):
 
         return {"ok": True, "message": "Config updated. Server restart may be required for some changes."}
 
+    except yaml.YAMLError as e:
+        raise HTTPException(422, detail=f"Invalid YAML in config: {e}")
+    except PermissionError as e:
+        raise HTTPException(403, detail=f"Permission denied: {e}")
+    except FileNotFoundError as e:
+        raise HTTPException(404, detail=f"Config file not found: {e}")
     except Exception as e:
         logger.error("Config update failed: %s", e)
         raise HTTPException(500, detail=f"Config update failed: {e}")

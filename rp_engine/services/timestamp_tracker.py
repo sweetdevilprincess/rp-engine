@@ -425,9 +425,12 @@ class TimestampTracker:
         return dominant_name, dominant_mult
 
 
+# Pre-computed reverse map for O(1) category lookup
+_ACTIVITY_TO_CATEGORY: dict[str, str] = {
+    act: cat for cat, acts in ACTIVITY_CATEGORIES.items() for act in acts
+}
+
+
 def _get_category(activity: str) -> str:
     """Get the category for an activity name."""
-    for cat, members in ACTIVITY_CATEGORIES.items():
-        if activity in members:
-            return cat
-    return "other"
+    return _ACTIVITY_TO_CATEGORY.get(activity, "other")

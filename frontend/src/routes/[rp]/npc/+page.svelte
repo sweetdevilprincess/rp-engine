@@ -3,6 +3,14 @@
 	import { listNPCs, getTrustInfo } from '$lib/api/npc';
 	import { addToast } from '$lib/stores/ui';
 	import type { NPCListItem, TrustInfo } from '$lib/types';
+	import { importanceColors, trustStageColors } from '$lib/utils/colors';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import InputField from '$lib/components/ui/InputField.svelte';
+	import SectionLabel from '$lib/components/ui/SectionLabel.svelte';
+	import SelectField from '$lib/components/ui/SelectField.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import { barStyle, formatDate } from '$lib/utils/format';
+	import TrustBar from '$lib/components/ui/TrustBar.svelte';
 
 	let npcs: NPCListItem[] = [];
 	let loading = false;
@@ -44,38 +52,8 @@
 		}
 	}
 
-	// Trust bar: range -100 to +100, center at 50%
-	function barStyle(score: number): string {
-		const clamped = Math.max(-100, Math.min(100, score));
-		const width = Math.abs(clamped) / 2;
-		const left = clamped >= 0 ? 50 : 50 + clamped / 2;
-		const color = clamped >= 0 ? '#4caf50' : '#ef5350';
-		return `left:${left}%;width:${width}%;background:${color}`;
-	}
 
-	function trustStageColor(stage: string | null): string {
-		if (!stage) return 'bg-surface2 text-text-dim';
-		const s = stage.toLowerCase();
-		if (s.includes('hostile') || s.includes('enemy')) return 'bg-error/20 text-error';
-		if (s.includes('distrust') || s.includes('suspicious')) return 'bg-warning/20 text-warning';
-		if (s.includes('neutral')) return 'bg-surface2 text-text-dim';
-		if (s.includes('acquaint') || s.includes('friendly')) return 'bg-green-500/20 text-green-400';
-		if (s.includes('trust') || s.includes('ally') || s.includes('bond')) return 'bg-accent/20 text-accent';
-		return 'bg-surface2 text-text-dim';
-	}
-
-	function importanceColor(imp: string | null): string {
-		if (!imp) return 'bg-surface2 text-text-dim';
-		if (imp === 'primary') return 'bg-accent/20 text-accent';
-		if (imp === 'secondary') return 'bg-surface2 text-text';
-		return 'bg-surface2 text-text-dim';
-	}
-
-	function formatDate(iso: string) {
-		return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-	}
-
-	$: sorted = [...npcs]
+	let sorted = $derived([...npcs]
 		.filter(n =>
 			!filterText.trim() ||
 			n.name.toLowerCase().includes(filterText.toLowerCase()) ||
@@ -90,42 +68,32 @@
 				return rank(a.importance) - rank(b.importance);
 			}
 			return 0;
-		});
+		}));
 </script>
 
 <div class="space-y-4 max-w-4xl">
 
 	<!-- Controls -->
 	<div class="flex items-center gap-3">
-		<input
-			type="text"
-			bind:value={filterText}
-			placeholder="Filter by name or archetype..."
-			class="flex-1 bg-surface border border-border-custom rounded-lg px-3 py-2 text-sm text-text
-				placeholder:text-text-dim/50 focus:outline-none focus:ring-1 focus:ring-accent"
-		/>
-		<select
-			bind:value={sortBy}
-			class="bg-surface border border-border-custom rounded-lg px-3 py-2 text-sm text-text
-				focus:outline-none focus:ring-1 focus:ring-accent"
-		>
-			<option value="trust_desc">Trust: High → Low</option>
-			<option value="trust_asc">Trust: Low → High</option>
-			<option value="name">Name A–Z</option>
-			<option value="importance">Importance</option>
-		</select>
+		<div class="flex-1 min-w-0">
+			<InputField bind:value={filterText} placeholder="Filter by name or archetype..." />
+		</div>
+		<div class="shrink-0">
+			<SelectField bind:value={sortBy} options={[
+				{value: 'trust_desc', label: 'Trust: High → Low'},
+				{value: 'trust_asc', label: 'Trust: Low → High'},
+				{value: 'name', label: 'Name A–Z'},
+				{value: 'importance', label: 'Importance'}
+			]} />
+		</div>
 		<span class="text-sm text-text-dim shrink-0">{sorted.length} NPC{sorted.length !== 1 ? 's' : ''}</span>
 	</div>
 
 	<!-- NPC list -->
 	{#if loading}
-		<div class="bg-surface rounded-lg border border-border-custom p-8 text-center text-sm text-text-dim">
-			Loading NPCs...
-		</div>
+		<EmptyState message="Loading NPCs..." variant="loading" />
 	{:else if sorted.length === 0}
-		<div class="bg-surface rounded-lg border border-border-custom p-8 text-center text-sm text-text-dim">
-			{filterText ? 'No NPCs match your filter.' : 'No NPCs found for this RP.'}
-		</div>
+		<EmptyState message={filterText ? 'No NPCs match your filter.' : 'No NPCs found for this RP.'} />
 	{:else}
 		<div class="space-y-2">
 			{#each sorted as npc}
@@ -133,8 +101,8 @@
 
 					<!-- NPC summary row -->
 					<button
-						class="w-full flex items-center gap-3 px-4 py-3 hover:bg-surface2 transition-colors text-left"
-						on:click={() => toggleExpand(npc.name)}
+						class="w-full flex items-center gap-3 px-4 py-3 hover:bg-bg-subtle transition-colors text-left"
+						onclick={() => toggleExpand(npc.name)}
 					>
 						<!-- Name + badges -->
 						<div class="flex items-center gap-2 w-48 shrink-0 min-w-0">
@@ -142,32 +110,21 @@
 						</div>
 						<div class="flex items-center gap-1.5 shrink-0">
 							{#if npc.importance}
-								<span class="text-xs px-1.5 py-0.5 rounded {importanceColor(npc.importance)}">{npc.importance}</span>
+								{@const ic = importanceColors(npc.importance)}
+								<Badge color={ic.text} bg={ic.bg}>{npc.importance}</Badge>
 							{/if}
 							{#if npc.primary_archetype}
-								<span class="text-xs px-1.5 py-0.5 rounded bg-surface2 text-text-dim">{npc.primary_archetype}</span>
+								<Badge>{npc.primary_archetype}</Badge>
 							{/if}
 						</div>
 
 						<!-- Trust bar -->
-						<div class="flex-1 flex items-center gap-3 min-w-0">
-							<div class="relative flex-1 h-2 bg-surface2 rounded-full overflow-hidden">
-								<!-- Center tick -->
-								<div class="absolute top-0 bottom-0 w-px bg-border-custom" style="left:50%"></div>
-								<!-- Fill -->
-								<div class="absolute top-0 bottom-0 rounded-full" style="{barStyle(npc.trust_score)}"></div>
-							</div>
-							<span class="text-sm font-mono w-10 text-right shrink-0
-								{npc.trust_score > 0 ? 'text-success' : npc.trust_score < 0 ? 'text-error' : 'text-text-dim'}">
-								{npc.trust_score > 0 ? '+' : ''}{npc.trust_score}
-							</span>
-						</div>
+						<TrustBar score={npc.trust_score} />
 
 						<!-- Trust stage -->
 						{#if npc.trust_stage}
-							<span class="text-xs px-2 py-0.5 rounded {trustStageColor(npc.trust_stage)} shrink-0">
-								{npc.trust_stage}
-							</span>
+							{@const ts = trustStageColors(npc.trust_stage)}
+							<Badge color={ts.text} bg={ts.bg}>{npc.trust_stage}</Badge>
 						{/if}
 
 						<!-- Expand chevron -->
@@ -202,7 +159,7 @@
 										<span class="text-text-dim text-xs">Behavioral modifiers</span>
 										<div class="flex flex-wrap gap-1 mt-1">
 											{#each npc.behavioral_modifiers as mod}
-												<span class="text-xs bg-surface2 text-text-dim px-1.5 py-0.5 rounded">{mod}</span>
+												<Badge>{mod}</Badge>
 											{/each}
 										</div>
 									</div>

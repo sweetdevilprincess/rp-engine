@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import socket
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,18 @@ from rp_engine.config import get_config
 from rp_engine.container import ServiceContainer
 
 logger = logging.getLogger(__name__)
+
+
+def _get_lan_ip() -> str:
+    """Detect the machine's LAN IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 @asynccontextmanager
@@ -47,9 +60,17 @@ app = FastAPI(
 # CORS — configurable origins (defaults to localhost only)
 from starlette.middleware.cors import CORSMiddleware  # noqa: E402
 
+_config = get_config()
+_cors_origins = list(_config.server.cors_origins)
+if _config.server.lan_access:
+    _lan_ip = _get_lan_ip()
+    _cors_origins.append(f"http://{_lan_ip}:{_config.server.port}")
+    _cors_origins.append(f"http://{_lan_ip}:5173")
+    logger.info("LAN access enabled — added origins for %s", _lan_ip)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_config().server.cors_origins,
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -59,8 +80,10 @@ from rp_engine.routers import (  # noqa: E402
     analyze,
     branches,
     cards,
+    chat,
     config,
     context,
+    continuity,
     custom_state,
     exchanges,
     npc,
@@ -90,6 +113,8 @@ app.include_router(config.router)
 app.include_router(vectors.router)
 app.include_router(timeline.router)
 app.include_router(custom_state.router)
+app.include_router(chat.router)
+app.include_router(continuity.router)
 
 
 @app.get("/health")

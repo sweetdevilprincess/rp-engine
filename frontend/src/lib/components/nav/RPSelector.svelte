@@ -15,9 +15,9 @@
 </script>
 
 <select
-	class="w-full bg-surface2 border border-border-custom rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:ring-1 focus:ring-accent"
+	class="w-full bg-bg border border-border-custom rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:ring-1 focus:ring-accent"
 	value={$activeRP?.rp_folder ?? ''}
-	on:change={selectRP}
+	onchange={selectRP}
 >
 	<option value="" disabled>Select RP</option>
 	{#each $rpList as rp}

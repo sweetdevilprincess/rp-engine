@@ -16,6 +16,8 @@ export async function updateThreadCounter(threadId: string, counter: number): Pr
 	});
 }
 
-export async function getAlerts(): Promise<unknown> {
-	return apiFetch('/api/threads/alerts');
+import type { ThreadAlert } from '$lib/types';
+
+export async function getAlerts(): Promise<ThreadAlert[]> {
+	return apiFetch<ThreadAlert[]>('/api/threads/alerts');
 }

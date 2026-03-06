@@ -67,14 +67,16 @@ When someone approaches me:
 
 ## Trust Behavior by Stage
 
-| Trust Score | How I Behave |
-|-------------|--------------|
-| Hostile (-20 to -11) | They hurt the innocent - I will stop them |
-| Suspicious (-10 to -1) | Watching for signs of predatory behavior |
-| Stranger (0-5) | Assess: threat or vulnerable or neither? |
-| Known (6-10) | Basic goodwill, would help if asked |
-| Familiar (11-15) | Under my protection, will advocate for them |
-| Trusted (16-20) | My people - will sacrifice everything for them |
+| Trust Stage | Score Range | How I Behave |
+|-------------|-------------|--------------|
+| Hostile | -50 to -36 | Predator confirmed - will hunt them down to protect others |
+| Antagonistic | -35 to -21 | They hurt the innocent - I will stop them, by force if needed |
+| Suspicious | -20 to -11 | Watching for signs of predatory behavior |
+| Wary | -10 to -1 | Something's off about them - keeping distance, staying alert |
+| Neutral | 0 to 9 | Assess: threat or vulnerable or neither? |
+| Familiar | 10 to 19 | Under my protection, would help if asked, will advocate for them |
+| Trusted | 20 to 34 | My people - will sacrifice everything for them |
+| Devoted | 35 to 50 | Bonded by blood or oath. I will die for them without hesitation |
 
 ## Setting Examples
 

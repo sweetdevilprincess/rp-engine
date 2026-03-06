@@ -13,7 +13,7 @@ import json
 import re
 import uuid
 from abc import abstractmethod
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Callable, Optional
 
@@ -164,7 +164,7 @@ class BaseFeedbackProcessor:
         pattern.severity = min(1.0, pattern.severity + 0.1)
         if pattern.proficiency > 0.5:
             pattern.proficiency = 0.3
-        pattern.last_corrected = datetime.utcnow()
+        pattern.last_corrected = datetime.now(UTC)
         existing_triggers = set(pattern.context_triggers)
         existing_triggers.update(extraction.context_triggers)
         pattern.context_triggers = list(existing_triggers)
@@ -180,7 +180,7 @@ class BaseFeedbackProcessor:
                 extracted_rule=extraction.compressed_rule,
                 tokens_original=len(extraction.original_excerpt.split()),
                 tokens_revised=len(extraction.revised_excerpt.split()),
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
             )
             self.db.insert_correction_pair(pair)
 
@@ -198,7 +198,7 @@ class BaseFeedbackProcessor:
             correction_count=1,
             context_triggers=extraction.context_triggers,
             compressed_rule=extraction.compressed_rule,
-            last_corrected=datetime.utcnow(),
+            last_corrected=datetime.now(UTC),
         )
         self.db.insert_pattern(pattern)
 
@@ -212,7 +212,7 @@ class BaseFeedbackProcessor:
                 extracted_rule=extraction.compressed_rule,
                 tokens_original=len(extraction.original_excerpt.split()),
                 tokens_revised=len(extraction.revised_excerpt.split()),
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
             )
             self.db.insert_correction_pair(pair)
 

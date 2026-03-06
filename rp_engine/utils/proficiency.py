@@ -6,7 +6,7 @@ update logic. This module provides the shared implementation.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol
 
 
@@ -45,7 +45,7 @@ class BaseProficiencyUpdater:
                 continue
             pattern.proficiency = self._clamp(pattern.proficiency + self.increment_step)
             pattern.frequency += 1
-            pattern.last_triggered = datetime.utcnow()
+            pattern.last_triggered = datetime.now(UTC)
             self.db.update_pattern(pattern)
 
     def on_corrected(self, corrected_pattern_ids: list[str],
@@ -59,8 +59,8 @@ class BaseProficiencyUpdater:
                 continue
             pattern.proficiency = self._clamp(pattern.proficiency - self.decrement_step)
             pattern.correction_count += 1
-            pattern.last_corrected = datetime.utcnow()
-            pattern.last_triggered = datetime.utcnow()
+            pattern.last_corrected = datetime.now(UTC)
+            pattern.last_triggered = datetime.now(UTC)
             self.db.update_pattern(pattern)
 
         # Injected but NOT corrected = LLM followed guidance, increment
@@ -72,7 +72,7 @@ class BaseProficiencyUpdater:
                 continue
             pattern.proficiency = self._clamp(pattern.proficiency + self.increment_step)
             pattern.frequency += 1
-            pattern.last_triggered = datetime.utcnow()
+            pattern.last_triggered = datetime.now(UTC)
             self.db.update_pattern(pattern)
 
     def on_regression(self, pattern_id: str) -> None:
@@ -81,7 +81,7 @@ class BaseProficiencyUpdater:
         if pattern is None:
             return
         pattern.proficiency = self._clamp(pattern.proficiency - self.regression_penalty)
-        pattern.last_corrected = datetime.utcnow()
+        pattern.last_corrected = datetime.now(UTC)
         pattern.correction_count += 1
         self.db.update_pattern(pattern)
 

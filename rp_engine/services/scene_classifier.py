@@ -7,11 +7,11 @@ Returns a dict of signal names → normalized scores (0.0-1.0).
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 
 from rp_engine.database import Database
+from rp_engine.utils.json_helpers import safe_parse_json_array
 
 logger = logging.getLogger(__name__)
 
@@ -241,10 +241,7 @@ class SceneClassifier:
             # Parse conditions JSON array
             conditions_raw = char.get("conditions")
             if conditions_raw:
-                try:
-                    conditions = json.loads(conditions_raw) if isinstance(conditions_raw, str) else conditions_raw
-                except (json.JSONDecodeError, TypeError):
-                    conditions = []
+                conditions = safe_parse_json_array(conditions_raw)
                 if isinstance(conditions, list):
                     for cond_val, signal, boost in CONDITION_BOOSTS:
                         if cond_val.lower() in [c.lower() for c in conditions if isinstance(c, str)]:

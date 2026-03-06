@@ -24,6 +24,22 @@ export async function apiFetch<T>(path: string, options: FetchOptions = {}): Pro
 		const branch = get(activeBranch);
 		if (rp) query.set('rp_folder', rp.rp_folder);
 		if (branch) query.set('branch', branch);
+
+		// Inject rp_folder/branch into JSON body for POST/PUT/PATCH too,
+		// since some backend endpoints read from body instead of query params.
+		const method = (init.method ?? 'GET').toUpperCase();
+		if (rp && init.body && typeof init.body === 'string' && ['POST', 'PUT', 'PATCH'].includes(method)) {
+			try {
+				const parsed = JSON.parse(init.body);
+				if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+					if (!('rp_folder' in parsed)) parsed.rp_folder = rp.rp_folder;
+					if (branch && !('branch' in parsed)) parsed.branch = branch;
+					init.body = JSON.stringify(parsed);
+				}
+			} catch {
+				// Not valid JSON — leave body as-is
+			}
+		}
 	}
 
 	for (const [k, v] of Object.entries(params)) {

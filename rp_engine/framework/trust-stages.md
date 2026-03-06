@@ -15,20 +15,13 @@
 
 ---
 
-## Trust Gain: Diminishing Returns
+## Trust Gain: Session Cap
 
-**Per-session positive interactions have decreasing impact:**
+**Per-Session Cap:** +8 maximum per character pair (hard cap, enforced in code via `session_max_gain`).
 
-| Interaction # (per session) | Trust Gain |
-|-----------------------------|------------|
-| 1st positive | +3 |
-| 2nd positive | +2 |
-| 3rd positive | +1 |
-| 4th+ positive | +0 |
+Each positive interaction adds `+1` trust. After 8 total gains in a session, further gains are blocked until the next session.
 
-**Per-Session Cap:** +6 maximum (enforced naturally by diminishing returns)
-
-**Reset:** New RP session resets the counter. Diminishing returns start fresh.
+**Reset:** New RP session resets the counter.
 
 **Rationale:** Relationships build slowly. You can't speedrun trust in one conversation.
 
@@ -54,16 +47,14 @@
 
 | Event | Gain | Notes |
 |-------|------|-------|
-| Polite, respectful interaction | +1 | First of session: +3 |
-| Small favor, helpful gesture | +2 | Subject to diminishing returns |
-| Defended them verbally | +3 | Counts as significant |
-| Protected them physically | +3 to +5 | Depending on risk taken |
-| Shared vulnerability honestly | +3 | Reciprocal trust building |
-| Kept a difficult promise | +4 | Proved reliability |
-| Saved their life | +6 to +10 | Exceptional, may bypass session cap |
-| Major sacrifice for them | +8 to +12 | Exceptional, may bypass session cap |
+| Polite, respectful interaction | +1 | Standard gain per interaction |
+| Small favor, helpful gesture | +1 | Standard gain per interaction |
+| Defended them verbally | +1 | Standard gain per interaction |
+| Protected them physically | +1 | Standard gain per interaction |
+| Shared vulnerability honestly | +1 | Standard gain per interaction |
+| Kept a difficult promise | +1 | Standard gain per interaction |
 
-**Exceptional Events:** Life-saving or major sacrifices may bypass the +6 session cap at narrator discretion.
+All positive interactions add +1 trust, capped at +8 per session per character pair.
 
 ---
 
@@ -227,10 +218,11 @@
 ## Modifier Interactions
 
 **PARANOID:**
-- Maximum trust: 19 (can never reach Trusted)
+- Trust ceiling offset: TBD (pending modifier trust ceiling implementation)
 - Positive gains halved (round down)
 - Negative impacts doubled
 - Periodic "trust decay" — loses 1 trust per 3 sessions without reinforcement
+- NOTE: Trust ceiling is not yet enforced in code — see modifier trust ceiling plan
 
 **OBSESSIVE:**
 - Ignores actual trust score for fixation target
@@ -267,11 +259,8 @@
 ## Quick Reference
 
 **Building Trust:**
-- First positive: +3
-- Second positive: +2
-- Third positive: +1
-- Fourth+: +0 (session capped)
-- Max per session: +6
+- Each positive interaction: +1
+- Max per session: +8 (hard cap)
 
 **Losing Trust:**
 - Minor negative: -2

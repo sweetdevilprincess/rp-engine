@@ -26,16 +26,16 @@ Trust no one. Question everything. Watch your back.
 | Single betrayal = trust drop | Single mistake = permanent distrust |
 | Normal risk assessment | Everything is a potential threat |
 
-## Trust Development (Impaired)
+## Trust Development (Impaired) — Code-Enforced
 
-- **Trust gains:** HALVED (round down)
-- **Maximum trust:** 10 (can never reach Familiar stage)
-- **Trust loss:** DOUBLED
+- **Trust gains:** HALVED (`gain_multiplier: 0.5`, minimum +1)
+- **Trust ceiling offset:** -15 (max trust = 35, top of Devoted range but limited)
+- **Trust loss:** DOUBLED (`loss_multiplier: 2.0`)
 - **Recovery:** Essentially impossible after betrayal
 
 **Example:**
-- Normal: +2 for positive interaction → Paranoid gets +1
-- Normal: -3 for broken promise → Paranoid loses -6
+- Normal: +2 for positive interaction → Paranoid gets +1 (halved)
+- Normal: -2 for broken promise → Paranoid loses -4 (doubled)
 
 ## Internal Voice Patterns
 

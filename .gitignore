@@ -1,15 +1,24 @@
 # Dev logs
 .dev-changes.jsonl
 CHANGELOG.md
+
 # Secrets
 .env
 .env.local
 
-# Runtime databases (auto-created on startup)
-data/*.db
-data/*.db-shm
-data/*.db-wal
-data/.*.json
+# Runtime databases and data (auto-created on startup)
+data/
+
+# Config (contains personal settings)
+config.yaml
+
+# Tests
+tests/
+test_npc.db
+
+# Dev-only utilities
+writing_intel_cli.py
+ui.html
 
 # Python
 __pycache__/
@@ -19,5 +28,5 @@ __pycache__/
 .venv/
 venv/
 
-#Instructions
+# Instructions
 CLAUDE.md

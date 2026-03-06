@@ -28,6 +28,7 @@ class ResponseAnalyzer:
 
     def __init__(self, db: Database, llm: LLMClient) -> None:
         self.db = db
+        self._alias_cache: dict[str, dict[str, str]] = {}  # rp_folder -> alias map
         self.llm = llm
 
     async def analyze(
@@ -71,7 +72,12 @@ class ResponseAnalyzer:
             return AnalysisLLMResult()
 
     async def _build_alias_map(self, rp_folder: str) -> dict[str, str]:
-        """Build {alias_lower: canonical_name} from entity_aliases + story_cards."""
+        """Build {alias_lower: canonical_name} from entity_aliases + story_cards.
+
+        Cached per rp_folder; invalidated via invalidate_alias_cache().
+        """
+        if rp_folder in self._alias_cache:
+            return self._alias_cache[rp_folder]
         rows = await self.db.fetch_all(
             """SELECT ea.alias, sc.name
                FROM entity_aliases ea
@@ -82,7 +88,15 @@ class ResponseAnalyzer:
         mapping: dict[str, str] = {}
         for row in rows:
             mapping[row["alias"].lower()] = row["name"]
+        self._alias_cache[rp_folder] = mapping
         return mapping
+
+    def invalidate_alias_cache(self, rp_folder: str | None = None) -> None:
+        """Clear alias cache. Called when cards are reindexed."""
+        if rp_folder:
+            self._alias_cache.pop(rp_folder, None)
+        else:
+            self._alias_cache.clear()
 
     def _build_prompt(self, exchanges: list[dict]) -> str:
         """Build the analysis prompt — ported verbatim from response-analyzer.js."""

@@ -41,7 +41,7 @@
 		<a
 			href="/"
 			class="flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors
-				{$page.url.pathname === '/' ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text hover:bg-surface2'}"
+				{$page.url.pathname === '/' ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text hover:bg-bg-subtle'}"
 		>
 			Home
 		</a>
@@ -54,7 +54,7 @@
 				<a
 					href="/{$activeRP.rp_folder}{link.path}"
 					class="flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors
-						{isActive(link.path) ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text hover:bg-surface2'}"
+						{isActive(link.path) ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text hover:bg-bg-subtle'}"
 				>
 					{link.label}
 				</a>

@@ -1,5 +1,5 @@
 import { apiFetch } from './client';
-import type { CardListResponse, StoryCardDetail, StoryCardCreate, StoryCardUpdate, ReindexResponse } from '$lib/types';
+import type { CardListResponse, StoryCardDetail, StoryCardCreate, StoryCardUpdate, ReindexResponse, SuggestCardResponse, AuditResponse, GraphData } from '$lib/types';
 
 export async function listCards(params?: { card_type?: string; importance?: string }): Promise<CardListResponse> {
 	return apiFetch<CardListResponse>('/api/cards', { params });
@@ -27,18 +27,26 @@ export async function reindex(): Promise<ReindexResponse> {
 	return apiFetch<ReindexResponse>('/api/cards/reindex', { method: 'POST' });
 }
 
-export async function suggestCard(entity_name: string, card_type: string): Promise<StoryCardDetail> {
-	return apiFetch<StoryCardDetail>('/api/cards/suggest', {
+export async function suggestCard(
+	entity_name: string,
+	card_type: string,
+	additional_context?: string
+): Promise<SuggestCardResponse> {
+	return apiFetch<SuggestCardResponse>('/api/cards/suggest', {
 		method: 'POST',
-		body: JSON.stringify({ entity_name, card_type }),
+		body: JSON.stringify({ entity_name, card_type, additional_context }),
 	});
 }
 
-export async function auditCards(mode?: string): Promise<unknown> {
-	return apiFetch('/api/cards/audit', {
+export async function auditCards(mode?: string): Promise<AuditResponse> {
+	return apiFetch<AuditResponse>('/api/cards/audit', {
 		method: 'POST',
 		body: JSON.stringify({ mode: mode ?? 'quick' }),
 	});
+}
+
+export async function getConnections(): Promise<GraphData> {
+	return apiFetch<GraphData>('/api/cards/connections');
 }
 
 export async function validateCard(card_type: string, frontmatter: Record<string, unknown>): Promise<unknown> {

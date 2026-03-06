@@ -66,14 +66,16 @@ When someone approaches me:
 
 ## Trust Behavior by Stage
 
-| Trust Score | How I Behave |
-|-------------|--------------|
-| Hostile (-20 to -11) | They're dangerous - avoid, hide, warn others |
-| Suspicious (-10 to -1) | Something's off - keep distance, be careful |
-| Stranger (0-5) | Don't know them - polite but uninvolved |
-| Known (6-10) | Seen them around - basic neighborly courtesy |
-| Familiar (11-15) | Good people - will help within my means |
-| Trusted (16-20) | Family - will risk for them, share what I have |
+| Trust Stage | Score Range | How I Behave |
+|-------------|-------------|--------------|
+| Hostile | -50 to -36 | Monster - hide the children, bar the doors, pray they don't come |
+| Antagonistic | -35 to -21 | They're dangerous - avoid, hide, warn others |
+| Suspicious | -20 to -11 | Something's off - keep distance, be careful |
+| Wary | -10 to -1 | Don't know their intentions - polite but guarded |
+| Neutral | 0 to 9 | Don't know them - polite but uninvolved |
+| Familiar | 10 to 19 | Good people - seen them around, will help within my means |
+| Trusted | 20 to 34 | Family - will risk for them, share what I have |
+| Devoted | 35 to 50 | Would lay down my life. They saved us. We owe them everything |
 
 ## Setting Examples
 

@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/analyze", tags=["analyze"])
 @router.get("/gaps", response_model=CardGapResponse)
 async def get_card_gaps(
     rp_folder: str = Query(...),
+    branch: str = Query("main"),
     min_seen_count: int = Query(1, ge=1),
     db: Database = Depends(get_db),
 ):
@@ -25,9 +26,9 @@ async def get_card_gaps(
     rows = await db.fetch_all(
         """SELECT entity_name, suggested_type, seen_count, first_seen, last_seen
            FROM card_gaps
-           WHERE rp_folder = ? AND seen_count >= ?
+           WHERE rp_folder = ? AND branch = ? AND seen_count >= ?
            ORDER BY seen_count DESC""",
-        [rp_folder, min_seen_count],
+        [rp_folder, branch, min_seen_count],
     )
 
     gaps = [

@@ -56,6 +56,13 @@ export interface StoryCardDetail {
   content: string;
   connections: EntityConnection[];
 }
+export interface SuggestCardResponse {
+  entity_name: string;
+  card_type: string;
+  markdown: string;
+  model_used: string;
+}
+
 export interface StoryCardCreate {
   name: string;
   frontmatter?: Record<string, unknown>;

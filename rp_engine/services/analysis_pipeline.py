@@ -45,6 +45,7 @@ class AnalysisPipeline:
         timestamp_tracker: TimestampTracker,
         trust_config: TrustConfig,
         lance_store=None,
+        continuity_checker=None,
     ) -> None:
         self.db = db
         self.response_analyzer = response_analyzer
@@ -53,6 +54,7 @@ class AnalysisPipeline:
         self.timestamp_tracker = timestamp_tracker
         self.trust_config = trust_config
         self.lance_store = lance_store
+        self.continuity_checker = continuity_checker
         self._queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
         self._consumer_task: asyncio.Task | None = None
         self._running = False
@@ -255,20 +257,45 @@ class AnalysisPipeline:
                 )
                 result.events_added += 1
 
-        # 7. Record new entities in card_gaps
+        # 7. Record new entities in card_gaps + gap exchanges
         now = datetime.now(UTC).isoformat()
+        exchange_number = exchange.get("exchange_number", 0)
+        combined_text = f"{user_msg}\n{asst_resp}"
+
         for char in analysis.new_entities.characters:
             if char.name:
-                await self._upsert_card_gap(char.name, "character", rp_folder, now)
+                await self._upsert_card_gap(char.name, "character", rp_folder, branch, now)
+                await self._record_gap_exchange(
+                    char.name, rp_folder, branch, exchange_number,
+                    combined_text, now,
+                )
                 result.card_gaps_added += 1
         for loc in analysis.new_entities.locations:
             if loc.name:
-                await self._upsert_card_gap(loc.name, "location", rp_folder, now)
+                await self._upsert_card_gap(loc.name, "location", rp_folder, branch, now)
+                await self._record_gap_exchange(
+                    loc.name, rp_folder, branch, exchange_number,
+                    combined_text, now,
+                )
                 result.card_gaps_added += 1
         for concept in analysis.new_entities.concepts:
             if concept.name:
-                await self._upsert_card_gap(concept.name, "lore", rp_folder, now)
+                await self._upsert_card_gap(concept.name, "lore", rp_folder, branch, now)
+                await self._record_gap_exchange(
+                    concept.name, rp_folder, branch, exchange_number,
+                    combined_text, now,
+                )
                 result.card_gaps_added += 1
+
+        # 7b. Continuity check (optional — disabled by default)
+        if self.continuity_checker:
+            try:
+                cont_warnings = await self.continuity_checker.check_exchange(
+                    exchange_id, analysis, rp_folder, branch,
+                )
+                result.continuity_warnings = len(cont_warnings)
+            except Exception as e:
+                logger.warning("Continuity check failed for exchange %d: %s", exchange_id, e)
 
         # 8. Thread counter updates
         alerts = await self.thread_tracker.update_counters(
@@ -282,21 +309,9 @@ class AnalysisPipeline:
         )
         result.timestamp_advanced = ts_result.new_timestamp is not None
 
-        # 9b. Exchange embedding (LanceDB)
-        if self.lance_store:
-            try:
-                exchange_number = exchange.get("exchange_number", 0)
-                await self.lance_store.embed_exchange(
-                    exchange_number=exchange_number,
-                    user_message=user_msg,
-                    assistant_response=asst_resp,
-                    rp_folder=rp_folder,
-                    branch=branch,
-                    session_id=exchange.get("session_id"),
-                    in_story_timestamp=ts_result.new_timestamp,
-                )
-            except Exception as e:
-                logger.warning("Exchange embedding failed: %s", e)
+        # 9b. Exchange embedding — now happens immediately on save (exchanges.py / auto_save.py).
+        # Analysis pipeline only updates the in_story_timestamp metadata if needed.
+        # Skip duplicate embedding here.
 
         # 10. Mark analysis as completed
         await self.db.enqueue_write(
@@ -309,14 +324,68 @@ class AnalysisPipeline:
         return result
 
     async def _upsert_card_gap(
-        self, entity_name: str, suggested_type: str, rp_folder: str, now: str
+        self, entity_name: str, suggested_type: str, rp_folder: str, branch: str, now: str
     ) -> None:
         """Insert or increment seen_count for a card gap."""
         await self.db.enqueue_write(
-            """INSERT INTO card_gaps (entity_name, rp_folder, suggested_type, seen_count, first_seen, last_seen)
-               VALUES (?, ?, ?, 1, ?, ?)
-               ON CONFLICT(entity_name, rp_folder)
+            """INSERT INTO card_gaps (entity_name, rp_folder, branch, suggested_type, seen_count, first_seen, last_seen)
+               VALUES (?, ?, ?, ?, 1, ?, ?)
+               ON CONFLICT(entity_name, rp_folder, branch)
                DO UPDATE SET seen_count = seen_count + 1, last_seen = excluded.last_seen""",
-            [entity_name, rp_folder, suggested_type, now, now],
+            [entity_name, rp_folder, branch, suggested_type, now, now],
             priority=PRIORITY_ANALYSIS,
         )
+
+    async def _record_gap_exchange(
+        self,
+        entity_name: str,
+        rp_folder: str,
+        branch: str,
+        exchange_number: int,
+        combined_text: str,
+        now: str,
+    ) -> None:
+        """Record which exchange mentioned a gap entity, with a text snippet."""
+        chunk = self._extract_mention_chunk(entity_name, combined_text)
+        mention_type = self._classify_mention_type(entity_name, combined_text)
+        await self.db.enqueue_write(
+            """INSERT OR IGNORE INTO card_gap_exchanges
+                   (entity_name, rp_folder, branch, exchange_number, chunk_text, mention_type, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [entity_name, rp_folder, branch, exchange_number, chunk, mention_type, now],
+            priority=PRIORITY_ANALYSIS,
+        )
+
+    @staticmethod
+    def _extract_mention_chunk(entity_name: str, text: str, window: int = 200) -> str:
+        """Extract a ~window-char snippet around the first mention of entity_name."""
+        lower_text = text.lower()
+        lower_name = entity_name.lower()
+        idx = lower_text.find(lower_name)
+        if idx == -1:
+            return text[:window * 2] if len(text) > window * 2 else text
+        start = max(0, idx - window)
+        end = min(len(text), idx + len(entity_name) + window)
+        chunk = text[start:end]
+        if start > 0:
+            chunk = "..." + chunk
+        if end < len(text):
+            chunk = chunk + "..."
+        return chunk
+
+    @staticmethod
+    def _classify_mention_type(entity_name: str, text: str) -> str:
+        """Classify whether the entity is a primary focus or peripheral mention.
+
+        Primary: entity appears 3+ times or in the first sentence.
+        """
+        lower_text = text.lower()
+        lower_name = entity_name.lower()
+        count = lower_text.count(lower_name)
+        if count >= 3:
+            return "primary"
+        first_period = text.find(".")
+        first_chunk = text[:first_period] if first_period > 0 else text[:200]
+        if lower_name in first_chunk.lower():
+            return "primary"
+        return "peripheral"

@@ -15,12 +15,19 @@ from rp_engine.container import ServiceContainer
 from rp_engine.database import Database
 from rp_engine.services.analysis_pipeline import AnalysisPipeline
 from rp_engine.services.auto_save import AutoSaveManager
+from rp_engine.services.chat_manager import ChatManager
+from rp_engine.services.recap_builder import RecapBuilder
+from rp_engine.services.summary_builder import SummaryBuilder
 from rp_engine.services.ancestry_resolver import AncestryResolver
 from rp_engine.services.branch_manager import BranchManager
 from rp_engine.services.card_indexer import CardIndexer
 from rp_engine.services.context_engine import ContextEngine
+from rp_engine.services.custom_state_manager import CustomStateManager
 from rp_engine.services.entity_extractor import EntityExtractor
 from rp_engine.services.graph_resolver import GraphResolver
+from rp_engine.services.guidelines_service import GuidelinesService
+from rp_engine.services.npc_brief_builder import NPCBriefBuilder
+from rp_engine.services.prompt_assembler import PromptAssembler
 from rp_engine.services.llm_client import LLMClient
 from rp_engine.services.npc_engine import NPCEngine
 from rp_engine.services.response_analyzer import ResponseAnalyzer
@@ -33,10 +40,11 @@ from rp_engine.services.vector_search import VectorSearch
 
 
 def _get(request: Request, attr: str) -> Any:
-    """Look up a service: prefer container, fall back to direct app.state attr."""
+    """Look up a service from the ServiceContainer on app.state."""
     container = getattr(request.app.state, "services", None)
     if container is not None:
         return getattr(container, attr)
+    # Fallback for test setups that put services directly on app.state
     return getattr(request.app.state, attr)
 
 
@@ -125,3 +133,47 @@ def get_auto_save_manager(request: Request) -> AutoSaveManager | None:
     if container is not None:
         return getattr(container, "auto_save_manager", None)
     return getattr(request.app.state, "auto_save_manager", None)
+
+
+def get_lance_store(request: Request):
+    """Get the LanceStore for immediate exchange embedding."""
+    container = getattr(request.app.state, "services", None)
+    if container is not None:
+        return getattr(container, "lance_store", None)
+    return getattr(request.app.state, "lance_store", None)
+
+
+def get_custom_state_manager(request: Request) -> CustomStateManager:
+    return _get(request, "custom_state_manager")
+
+
+def get_guidelines_service(request: Request) -> GuidelinesService:
+    return _get(request, "guidelines_service")
+
+
+def get_npc_brief_builder(request: Request) -> NPCBriefBuilder:
+    return _get(request, "npc_brief_builder")
+
+
+def get_prompt_assembler(request: Request) -> PromptAssembler:
+    return _get(request, "prompt_assembler")
+
+
+def get_summary_builder(request: Request) -> SummaryBuilder:
+    return _get(request, "summary_builder")
+
+
+def get_recap_builder(request: Request) -> RecapBuilder:
+    return _get(request, "recap_builder")
+
+
+def get_chat_manager(request: Request) -> ChatManager:
+    return _get(request, "chat_manager")
+
+
+def get_continuity_checker(request: Request):
+    """Get the ContinuityChecker (optional — may be None if disabled)."""
+    container = getattr(request.app.state, "services", None)
+    if container is not None:
+        return getattr(container, "continuity_checker", None)
+    return getattr(request.app.state, "continuity_checker", None)

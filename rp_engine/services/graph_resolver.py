@@ -7,12 +7,12 @@ entities with hop distance and full path information.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections import deque
 from dataclasses import dataclass
 
 from rp_engine.database import Database
+from rp_engine.utils.json_helpers import safe_parse_json
 from rp_engine.utils.normalization import (
     file_to_key,
     id_to_key,
@@ -246,9 +246,8 @@ class GraphResolver:
                 kept.append(sid)
                 continue
 
-            try:
-                fm = json.loads(card["frontmatter"]) if isinstance(card["frontmatter"], str) else card["frontmatter"]
-            except (json.JSONDecodeError, TypeError):
+            fm = safe_parse_json(card["frontmatter"])
+            if not fm:
                 kept.append(sid)
                 continue
 

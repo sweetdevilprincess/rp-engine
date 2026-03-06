@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,13 @@ PROJECT_ROOT = Path(__file__).parent.parent
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 3000
-    cors_origins: list[str] = ["http://localhost:*", "http://127.0.0.1:*"]
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+    ]
+    lan_access: bool = False
 
 
 class PathsConfig(BaseModel):
@@ -44,6 +50,18 @@ class ContextConfig(BaseModel):
     max_documents: int = 5
     max_graph_hops: int = 2
     stale_threshold_turns: int = 8
+    max_past_exchanges: int = 5
+    exclude_recent_exchanges: int = 3
+    past_exchange_min_score: float = 0.65
+    max_extracted_memories: int = 10
+    extracted_memory_min_score: float = 0.5
+
+
+class ChatConfig(BaseModel):
+    exchange_window: int = 10
+    model: str | None = None
+    temperature: float = 0.7
+    max_tokens: int = 4000
 
 
 class SearchConfig(BaseModel):
@@ -52,6 +70,21 @@ class SearchConfig(BaseModel):
     similarity_threshold: float = 0.7
     chunk_size: int = 1000
     chunk_overlap: int = 200
+    embedding_dimension: int = 1536
+
+
+class NPCConfig(BaseModel):
+    history_search_limit: int = 3
+    history_min_score: float = 0.5
+
+
+class ModifierTrustEffect(BaseModel):
+    """Trust effects for a behavioral modifier (e.g., PARANOID, GRIEF_CONSUMED)."""
+    ceiling_offset: int = 0
+    gain_multiplier: float = 1.0
+    loss_multiplier: float = 1.0
+    instant_shifts: dict[str, int] = {}
+    note: str = ""
 
 
 class TrustConfig(BaseModel):
@@ -61,6 +94,13 @@ class TrustConfig(BaseModel):
     session_max_loss: int = -15
     min_score: int = -50
     max_score: int = 50
+    modifier_effects: dict[str, ModifierTrustEffect] = {}
+
+
+class ContinuityConfig(BaseModel):
+    enabled: bool = False
+    max_search_results: int = 5
+    min_similarity: float = 0.65
 
 
 class RPConfig(BaseModel):
@@ -79,12 +119,15 @@ class RPEngineConfig(BaseSettings):
     paths: PathsConfig = PathsConfig()
     llm: LLMConfig = LLMConfig()
     context: ContextConfig = ContextConfig()
+    chat: ChatConfig = ChatConfig()
     search: SearchConfig = SearchConfig()
+    npc: NPCConfig = NPCConfig()
     trust: TrustConfig = TrustConfig()
+    continuity: ContinuityConfig = ContinuityConfig()
     rp: RPConfig = RPConfig()
 
-    # Standalone field — picks up OPENROUTER_API_KEY env var (no prefix)
-    openrouter_api_key: str = ""
+    # Standalone field — picks up OPENROUTER_API_KEY env var (no RP_ENGINE_ prefix)
+    openrouter_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
 
     def effective_api_key(self) -> str:
         """Return the best available API key."""

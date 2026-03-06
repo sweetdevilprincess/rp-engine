@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 
 from rp_engine.database import Database
+from rp_engine.utils.json_helpers import safe_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +157,8 @@ class AncestryResolver:
     ) -> list[dict]:
         """Collect ALL matching rows from the entire ancestry chain.
 
-        For tables like memory_entries, knowledge_entries, secret_events
-        where we want all accumulated data, not just the latest.
+        For tables where we want all accumulated data across the
+        ancestry chain, not just the latest entry.
         """
         chain = await self.get_ancestry_chain(rp_folder, branch)
         results: list[dict] = []
@@ -253,7 +254,7 @@ class AncestryResolver:
         Returns dict with: baseline_score, branch_modifications_sum, live_score,
         trust_stage, source_branch, source_exchange.
         """
-        from rp_engine.services.context_engine import trust_stage
+        from rp_engine.utils.trust import trust_stage
 
         # 1. Get baseline for this branch
         baseline_row = await self.db.fetch_one(
@@ -276,21 +277,17 @@ class AncestryResolver:
             )
             baseline = 0
             if card_row and card_row.get("frontmatter"):
-                import json
-                try:
-                    fm = json.loads(card_row["frontmatter"])
-                    # Check npc_trust_levels first, then initial_trust_score
-                    trust_levels = fm.get("npc_trust_levels", {})
-                    if isinstance(trust_levels, dict):
-                        # Case-insensitive lookup
-                        for key, val in trust_levels.items():
-                            if key.lower() == char_b.lower():
-                                baseline = val
-                                break
-                    if baseline == 0:
-                        baseline = fm.get("initial_trust_score", 0)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+                fm = safe_parse_json(card_row["frontmatter"])
+                # Check npc_trust_levels first, then initial_trust_score
+                trust_levels = fm.get("npc_trust_levels", {})
+                if isinstance(trust_levels, dict):
+                    # Case-insensitive lookup
+                    for key, val in trust_levels.items():
+                        if key.lower() == char_b.lower():
+                            baseline = val
+                            break
+                if baseline == 0:
+                    baseline = fm.get("initial_trust_score", 0)
             source_branch = None
             source_exchange = None
 

@@ -61,3 +61,58 @@ class ReindexResponse(BaseModel):
     aliases: int
     keywords: int
     duration_ms: float
+
+
+class SuggestCardRequest(BaseModel):
+    entity_name: str
+    card_type: str = "character"
+    rp_folder: str
+    additional_context: str = ""
+
+
+class SuggestCardResponse(BaseModel):
+    entity_name: str
+    card_type: str
+    markdown: str
+    model_used: str
+
+
+class AuditCardsRequest(BaseModel):
+    rp_folder: str
+    mode: str = "quick"
+    session_id: str | None = None
+
+
+class AuditGap(BaseModel):
+    entity_name: str
+    suggested_type: str | None = None
+    mention_count: int
+    exchanges: list[int] = []
+
+
+class AuditCardsResponse(BaseModel):
+    mode: str
+    gaps: list[AuditGap]
+    total_exchanges_scanned: int
+    total_gaps: int
+
+
+class GapExchangeRecord(BaseModel):
+    exchange_number: int
+    chunk_text: str | None = None
+    mention_type: str = "peripheral"
+
+
+class SceneEvidence(BaseModel):
+    start: int
+    end: int
+    exchange_count: int
+    exchanges: list[GapExchangeRecord]
+
+
+class GapEvidenceResponse(BaseModel):
+    entity_name: str
+    rp_folder: str
+    total_mentions: int
+    primary_mentions: int
+    scenes: list[SceneEvidence]

@@ -19,18 +19,27 @@ from rp_engine.dependencies import (
 )
 from rp_engine.models.frontmatter import FRONTMATTER_MODELS, validate_frontmatter
 from rp_engine.models.story_card import (
+    AuditCardsRequest,
+    AuditCardsResponse,
+    AuditGap,
     CardListResponse,
     EntityConnection,
+    GapEvidenceResponse,
+    GapExchangeRecord,
     ReindexResponse,
+    SceneEvidence,
     StoryCardCreate,
     StoryCardDetail,
     StoryCardSummary,
     StoryCardUpdate,
+    SuggestCardRequest,
+    SuggestCardResponse,
 )
 from rp_engine.services.card_indexer import CARD_TYPE_DIRS, CardIndexer
 from rp_engine.services.llm_client import LLMClient
 from rp_engine.utils.frontmatter import serialize_frontmatter
 from rp_engine.utils.normalization import generate_card_id, normalize_key
+from rp_engine.utils.scene_detection import group_into_scenes
 
 logger = logging.getLogger(__name__)
 
@@ -77,34 +86,48 @@ async def list_cards(
     else:
         connection_counts = {}
 
-    cards = []
-    for row in rows:
+    # Batch-fetch aliases for all cards (fixes N+1)
+    if rows:
         alias_rows = await db.fetch_all(
-            "SELECT alias FROM entity_aliases WHERE entity_id = ?", [row["id"]]
+            f"SELECT entity_id, alias FROM entity_aliases WHERE entity_id IN ({placeholders})",
+            id_list,
         )
-        aliases = [a["alias"] for a in alias_rows]
+        alias_map: dict[str, list[str]] = {}
+        for ar in alias_rows:
+            alias_map.setdefault(ar["entity_id"], []).append(ar["alias"])
 
-        fm_row = await db.fetch_one(
-            "SELECT frontmatter FROM story_cards WHERE id = ?", [row["id"]]
+        # Batch-fetch frontmatter for tags (single query instead of N)
+        fm_rows = await db.fetch_all(
+            f"SELECT id, frontmatter FROM story_cards WHERE id IN ({placeholders})",
+            id_list,
         )
-        tags = []
-        if fm_row and fm_row["frontmatter"]:
-            try:
-                fm = json.loads(fm_row["frontmatter"])
-                tags = fm.get("tags", [])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        tags_map: dict[str, list[str]] = {}
+        for fr in fm_rows:
+            tags = []
+            if fr["frontmatter"]:
+                try:
+                    fm = json.loads(fr["frontmatter"])
+                    tags = fm.get("tags", [])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            tags_map[fr["id"]] = tags if isinstance(tags, list) else []
+    else:
+        alias_map = {}
+        tags_map = {}
 
-        cards.append(StoryCardSummary(
+    cards = [
+        StoryCardSummary(
             name=row["name"],
             card_type=row["card_type"],
             importance=row["importance"],
             file_path=row["file_path"],
             summary=row["summary"],
-            aliases=aliases,
-            tags=tags if isinstance(tags, list) else [],
+            aliases=alias_map.get(row["id"], []),
+            tags=tags_map.get(row["id"], []),
             connection_count=connection_counts.get(row["id"], 0),
-        ))
+        )
+        for row in rows
+    ]
 
     return CardListResponse(cards=cards, total=len(cards))
 
@@ -181,38 +204,70 @@ async def reindex_all(
     return ReindexResponse(**result)
 
 
-@router.post("/suggest", response_model=dict)
+@router.post("/suggest", response_model=SuggestCardResponse)
 async def suggest_card(
-    body: dict,
+    body: SuggestCardRequest,
     db: Database = Depends(get_db),
     llm: LLMClient = Depends(get_llm_client),
     vault_root: Path = Depends(get_vault_root),
 ):
     """Generate a draft story card for an entity by searching exchanges and using LLM."""
-    entity_name = body.get("entity_name", "")
-    card_type = body.get("card_type", "character")
-    rp_folder = body.get("rp_folder", "")
-    additional_context = body.get("additional_context", "")
+    entity_name = body.entity_name
+    card_type = body.card_type
+    rp_folder = body.rp_folder
+    additional_context = body.additional_context
 
-    if not entity_name or not rp_folder:
-        from fastapi import HTTPException
-        raise HTTPException(400, detail="entity_name and rp_folder are required")
-
-    # Search exchanges for mentions
-    rows = await db.fetch_all(
-        """SELECT exchange_number, user_message, assistant_response
-           FROM exchanges
-           WHERE rp_folder = ? AND (
-               LOWER(user_message) LIKE ? OR LOWER(assistant_response) LIKE ?
-           )
-           ORDER BY exchange_number DESC LIMIT 10""",
-        [rp_folder, f"%{entity_name.lower()}%", f"%{entity_name.lower()}%"],
+    # Try scene-aware evidence first (from card_gap_exchanges)
+    gap_rows = await db.fetch_all(
+        """SELECT exchange_number, chunk_text, mention_type
+           FROM card_gap_exchanges
+           WHERE LOWER(entity_name) = LOWER(?) AND rp_folder = ?
+             AND branch = 'main'
+           ORDER BY exchange_number""",
+        [entity_name, rp_folder],
     )
 
-    evidence = "\n---\n".join(
-        f"Exchange {r['exchange_number']}:\n{r['assistant_response'][:500]}"
-        for r in rows
-    )
+    if gap_rows:
+        # Scene-aware path: group gap exchanges into scenes
+        exchange_nums = [r["exchange_number"] for r in gap_rows]
+        scenes = group_into_scenes(exchange_nums)
+        chunks_by_num = {r["exchange_number"]: r for r in gap_rows}
+
+        evidence_parts = []
+        for i, scene in enumerate(scenes, 1):
+            scene_chunks = []
+            for num in scene.exchanges:
+                row = chunks_by_num.get(num)
+                if row and row["chunk_text"]:
+                    label = "PRIMARY" if row["mention_type"] == "primary" else "peripheral"
+                    scene_chunks.append(f"[Exchange {num}, {label}]\n{row['chunk_text']}")
+            if scene_chunks:
+                evidence_parts.append(
+                    f"## Scene {i} (Exchanges {scene.start}-{scene.end})\n"
+                    + "\n---\n".join(scene_chunks)
+                )
+
+        evidence = "\n\n".join(evidence_parts)
+        primary_count = sum(1 for r in gap_rows if r["mention_type"] == "primary")
+        evidence += (
+            f"\n\nEntity mentioned in {len(gap_rows)} exchanges total, "
+            f"{primary_count} as primary focus."
+        )
+    else:
+        # Fallback: search exchanges directly (pre-existing gaps or no gap tracking)
+        rows = await db.fetch_all(
+            """SELECT exchange_number, user_message, assistant_response
+               FROM exchanges
+               WHERE rp_folder = ? AND (
+                   LOWER(user_message) LIKE ? OR LOWER(assistant_response) LIKE ?
+               )
+               ORDER BY exchange_number DESC LIMIT 10""",
+            [rp_folder, f"%{entity_name.lower()}%", f"%{entity_name.lower()}%"],
+        )
+        evidence = "\n---\n".join(
+            f"Exchange {r['exchange_number']}:\n{r['assistant_response'][:500]}"
+            for r in rows
+        )
 
     # Load template
     template_map = {
@@ -240,7 +295,7 @@ async def suggest_card(
 Use this template structure:
 {template}
 
-Based on these mentions in the RP:
+Based on these narrative scenes where the entity appears:
 {evidence}
 
 {f"Additional context: {additional_context}" if additional_context else ""}
@@ -254,17 +309,69 @@ Return ONLY the complete markdown card with frontmatter and content."""
         max_tokens=3000,
     )
 
-    return {
-        "entity_name": entity_name,
-        "card_type": card_type,
-        "markdown": response.content,
-        "model_used": response.model,
-    }
+    return SuggestCardResponse(
+        entity_name=entity_name,
+        card_type=card_type,
+        markdown=response.content,
+        model_used=response.model,
+    )
 
 
-@router.post("/audit", response_model=dict)
+@router.get("/gaps/{entity_name}/evidence", response_model=GapEvidenceResponse)
+async def get_gap_evidence(
+    entity_name: str,
+    rp_folder: str = Query(...),
+    branch: str = Query("main"),
+    db: Database = Depends(get_db),
+):
+    """Return scene-grouped evidence for a card gap entity."""
+    rows = await db.fetch_all(
+        """SELECT exchange_number, chunk_text, mention_type
+           FROM card_gap_exchanges
+           WHERE LOWER(entity_name) = LOWER(?) AND rp_folder = ? AND branch = ?
+           ORDER BY exchange_number""",
+        [entity_name, rp_folder, branch],
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No gap evidence found for '{entity_name}' in '{rp_folder}'",
+        )
+
+    exchange_nums = [r["exchange_number"] for r in rows]
+    scenes = group_into_scenes(exchange_nums)
+    chunks_by_num = {r["exchange_number"]: r for r in rows}
+
+    scene_list = []
+    for scene in scenes:
+        records = []
+        for num in scene.exchanges:
+            row = chunks_by_num.get(num)
+            if row:
+                records.append(GapExchangeRecord(
+                    exchange_number=num,
+                    chunk_text=row["chunk_text"],
+                    mention_type=row["mention_type"],
+                ))
+        scene_list.append(SceneEvidence(
+            start=scene.start,
+            end=scene.end,
+            exchange_count=scene.size,
+            exchanges=records,
+        ))
+
+    return GapEvidenceResponse(
+        entity_name=entity_name,
+        rp_folder=rp_folder,
+        total_mentions=len(rows),
+        primary_mentions=sum(1 for r in rows if r["mention_type"] == "primary"),
+        scenes=scene_list,
+    )
+
+
+@router.post("/audit", response_model=AuditCardsResponse)
 async def audit_cards(
-    body: dict,
+    body: AuditCardsRequest,
     db: Database = Depends(get_db),
 ):
     """Audit exchanges for entity mentions missing story cards.
@@ -273,13 +380,9 @@ async def audit_cards(
     """
     import re
 
-    rp_folder = body.get("rp_folder", "")
-    mode = body.get("mode", "quick")
-    session_id = body.get("session_id")
-
-    if not rp_folder:
-        from fastapi import HTTPException
-        raise HTTPException(400, detail="rp_folder is required")
+    rp_folder = body.rp_folder
+    mode = body.mode
+    session_id = body.session_id
 
     # Load exchanges
     if session_id:
@@ -327,24 +430,23 @@ async def audit_cards(
                 entity_mentions[match].append(row["id"])
 
     gaps = [
-        {
-            "entity_name": name,
-            "suggested_type": None,
-            "mention_count": len(exchanges),
-            "exchanges": exchanges[:5],
-        }
+        AuditGap(
+            entity_name=name,
+            mention_count=len(exchanges),
+            exchanges=exchanges[:5],
+        )
         for name, exchanges in sorted(
             entity_mentions.items(), key=lambda x: len(x[1]), reverse=True
         )
         if len(exchanges) >= 2  # Only report entities mentioned multiple times
     ]
 
-    return {
-        "mode": mode,
-        "gaps": gaps,
-        "total_exchanges_scanned": len(rows),
-        "total_gaps": len(gaps),
-    }
+    return AuditCardsResponse(
+        mode=mode,
+        gaps=gaps,
+        total_exchanges_scanned=len(rows),
+        total_gaps=len(gaps),
+    )
 
 
 class CardValidateRequest(BaseModel):

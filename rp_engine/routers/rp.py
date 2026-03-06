@@ -78,26 +78,32 @@ async def list_rps(
 ):
     """List all discovered RP folders with basic info."""
     folders = indexer.get_all_rp_folders()
+    if not folders:
+        return []
+
+    # Batch queries instead of 2N individual queries
+    card_count_rows = await db.fetch_all(
+        "SELECT rp_folder, COUNT(*) as cnt FROM story_cards GROUP BY rp_folder"
+    )
+    card_counts = {r["rp_folder"]: r["cnt"] for r in card_count_rows}
+
+    branch_rows = await db.fetch_all(
+        "SELECT rp_folder, name FROM branches"
+    )
+    branch_map: dict[str, list[str]] = {}
+    for r in branch_rows:
+        branch_map.setdefault(r["rp_folder"], []).append(r["name"])
+
     result = []
     for folder in folders:
-        card_count = await db.fetch_val(
-            "SELECT COUNT(*) FROM story_cards WHERE rp_folder = ?", [folder]
-        ) or 0
-
+        card_count = card_counts.get(folder, 0)
         guidelines_path = vault_root / folder / "RP State" / "Story_Guidelines.md"
-        has_guidelines = guidelines_path.exists()
-
-        branch_rows = await db.fetch_all(
-            "SELECT name FROM branches WHERE rp_folder = ?", [folder]
-        )
-        branches = [r["name"] for r in branch_rows]
-
         result.append(RPInfo(
             rp_folder=folder,
             has_story_cards=card_count > 0,
             card_count=card_count,
-            has_guidelines=has_guidelines,
-            branches=branches,
+            has_guidelines=guidelines_path.exists(),
+            branches=branch_map.get(folder, []),
         ))
     return result
 

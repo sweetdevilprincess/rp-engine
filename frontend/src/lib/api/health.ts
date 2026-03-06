@@ -1,9 +1,7 @@
 import { apiFetch } from './client';
+import type { HealthResponse } from '$lib/types';
 
-export interface HealthResponse {
-	version: string;
-	indexed_cards: number | null;
-}
+export type { HealthResponse };
 
 export async function checkHealth(): Promise<HealthResponse> {
 	return apiFetch<HealthResponse>('/health', { skipRPContext: true });

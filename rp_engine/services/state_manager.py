@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
-from rp_engine.config import TrustConfig
+from rp_engine.config import ModifierTrustEffect, TrustConfig
 from rp_engine.database import PRIORITY_ANALYSIS, Database
 from rp_engine.models.context import SceneState
 from rp_engine.models.state import (
@@ -26,7 +26,7 @@ from rp_engine.models.state import (
     TrustModification,
 )
 from rp_engine.services.ancestry_resolver import AncestryResolver
-from rp_engine.services.context_engine import trust_stage
+from rp_engine.utils.trust import trust_stage
 from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,54 @@ class StateManager:
             [rp_folder, branch],
         )
         return latest or 0
+
+    # ===================================================================
+    # Modifier Trust Effects
+    # ===================================================================
+
+    async def _get_modifier_effects(
+        self, char_name: str, rp_folder: str
+    ) -> ModifierTrustEffect | None:
+        """Look up combined modifier trust effects for an NPC.
+
+        Reads the NPC's behavioral_modifiers from story_cards, maps each to
+        config-defined trust effects, and merges them into a single effect.
+        """
+        if not self.config.modifier_effects:
+            return None
+
+        card = await self.db.fetch_one(
+            """SELECT frontmatter FROM story_cards
+               WHERE rp_folder = ? AND LOWER(name) = LOWER(?)
+                 AND card_type IN ('character', 'npc')""",
+            [rp_folder, char_name],
+        )
+        if not card:
+            return None
+
+        fm = safe_parse_json(card.get("frontmatter"))
+        modifiers = safe_parse_json_list(fm.get("behavioral_modifiers"))
+        if not modifiers:
+            return None
+
+        # Merge effects from all modifiers
+        merged = ModifierTrustEffect()
+        has_effects = False
+        for mod_name in modifiers:
+            mod_str = mod_name if isinstance(mod_name, str) else str(mod_name)
+            effect = self.config.modifier_effects.get(mod_str.upper())
+            if effect:
+                has_effects = True
+                # Ceiling offset: use the most restrictive (most negative)
+                if effect.ceiling_offset != 0:
+                    merged.ceiling_offset = min(merged.ceiling_offset, effect.ceiling_offset)
+                # Multipliers: multiply together
+                merged.gain_multiplier *= effect.gain_multiplier
+                merged.loss_multiplier *= effect.loss_multiplier
+                # Instant shifts: merge (later modifier wins on collision)
+                merged.instant_shifts.update(effect.instant_shifts)
+
+        return merged if has_effects else None
 
     # ===================================================================
     # Character State
@@ -306,6 +354,17 @@ class StateManager:
             for m in mods
         ]
 
+        # Load relationship dynamic (role) from entity_connections
+        dynamic_row = await self.db.fetch_one(
+            """SELECT role FROM entity_connections
+               WHERE connection_type = 'has_relationship'
+                 AND ((LOWER(from_entity) = LOWER(?) AND LOWER(to_entity) = LOWER(?))
+                   OR (LOWER(from_entity) = LOWER(?) AND LOWER(to_entity) = LOWER(?)))
+                 AND role IS NOT NULL
+               LIMIT 1""",
+            [char_a, char_b, char_b, char_a],
+        )
+
         return RelationshipDetail(
             character_a=char_a,
             character_b=char_b,
@@ -313,6 +372,7 @@ class StateManager:
             trust_modification_sum=trust_data["branch_modifications_sum"],
             live_trust_score=trust_data["live_score"],
             trust_stage=trust_data["trust_stage"],
+            dynamic=dynamic_row["role"] if dynamic_row else None,
             modifications=modifications,
         )
 
@@ -355,6 +415,15 @@ class StateManager:
         for row in mod_rows:
             mod_map[(row["character_a"], row["character_b"])] = row["total"]
 
+        # Batch fetch relationship dynamics (roles) from entity_connections
+        role_rows = await self.db.fetch_all(
+            """SELECT from_entity, to_entity, role FROM entity_connections
+               WHERE connection_type = 'has_relationship' AND role IS NOT NULL""",
+        )
+        role_map: dict[tuple[str, str], str] = {}
+        for rr in role_rows:
+            role_map[(rr["from_entity"].lower(), rr["to_entity"].lower())] = rr["role"]
+
         results = []
         seen_pairs: set[tuple[str, str]] = set()
         for br in baseline_rows:
@@ -367,6 +436,10 @@ class StateManager:
             mod_sum = mod_map.get(pair, 0)
             live = baseline + mod_sum
 
+            # Look up dynamic from either direction
+            a_lower, b_lower = pair[0].lower(), pair[1].lower()
+            dynamic = role_map.get((a_lower, b_lower)) or role_map.get((b_lower, a_lower))
+
             results.append(RelationshipDetail(
                 character_a=br["character_a"],
                 character_b=br["character_b"],
@@ -374,6 +447,7 @@ class StateManager:
                 trust_modification_sum=mod_sum,
                 live_trust_score=live,
                 trust_stage=trust_stage(live),
+                dynamic=dynamic,
             ))
 
         return results
@@ -425,12 +499,17 @@ class StateManager:
         rp_folder: str,
         branch: str = "main",
         exchange_id: int | None = None,
+        bypass_session_cap: bool = False,
     ) -> RelationshipDetail:
         """Apply a trust change between two characters.
 
         Uses trust_modifications with direct columns (character_a, character_b, branch,
         exchange_number, rp_folder) for direct querying without JOIN.
-        Checks session caps (computed from DB) and score bounds.
+        Checks session caps (computed from DB), modifier effects, and score bounds.
+
+        Args:
+            bypass_session_cap: If True, skip session cap checks. Used for
+                HONOR_BOUND instant shifts triggered by oath events.
         """
         if not self.resolver:
             raise RuntimeError("update_trust requires an AncestryResolver")
@@ -442,37 +521,52 @@ class StateManager:
         trust_data = await self.resolver.resolve_trust(char_a, char_b, rp_folder, branch)
         current_live = trust_data["live_score"]
 
-        # Check session caps (computed from DB — survives restarts)
-        caps = await self._get_session_trust_caps(char_a, char_b, rp_folder, branch)
-
         effective_change = change
-        if change > 0:
-            remaining_gain = self.config.session_max_gain - caps["gained"]
-            if remaining_gain <= 0:
-                logger.info(
-                    "Session gain cap reached for %s<->%s (gained=%d, cap=%d)",
-                    char_a, char_b, caps["gained"], self.config.session_max_gain,
-                )
-                effective_change = 0
-            else:
-                effective_change = min(change, remaining_gain)
-        elif change < 0:
-            remaining_loss = self.config.session_max_loss - caps["lost"]
-            if remaining_loss >= 0:
-                logger.info(
-                    "Session loss cap reached for %s<->%s (lost=%d, cap=%d)",
-                    char_a, char_b, caps["lost"], self.config.session_max_loss,
-                )
-                effective_change = 0
-            else:
-                effective_change = max(change, remaining_loss)
 
-        # Clamp to score bounds
+        # Check session caps (computed from DB — survives restarts)
+        if not bypass_session_cap:
+            caps = await self._get_session_trust_caps(char_a, char_b, rp_folder, branch)
+
+            if change > 0:
+                remaining_gain = self.config.session_max_gain - caps["gained"]
+                if remaining_gain <= 0:
+                    logger.info(
+                        "Session gain cap reached for %s<->%s (gained=%d, cap=%d)",
+                        char_a, char_b, caps["gained"], self.config.session_max_gain,
+                    )
+                    effective_change = 0
+                else:
+                    effective_change = min(change, remaining_gain)
+            elif change < 0:
+                remaining_loss = self.config.session_max_loss - caps["lost"]
+                if remaining_loss >= 0:
+                    logger.info(
+                        "Session loss cap reached for %s<->%s (lost=%d, cap=%d)",
+                        char_a, char_b, caps["lost"], self.config.session_max_loss,
+                    )
+                    effective_change = 0
+                else:
+                    effective_change = max(change, remaining_loss)
+
+        # Apply modifier trust effects (after session cap, before score bounds)
+        modifier_effects = await self._get_modifier_effects(char_b, rp_folder)
+        if modifier_effects and effective_change != 0:
+            # Apply gain/loss multipliers
+            if effective_change > 0 and modifier_effects.gain_multiplier != 1.0:
+                effective_change = max(1, int(effective_change * modifier_effects.gain_multiplier))
+            elif effective_change < 0 and modifier_effects.loss_multiplier != 1.0:
+                effective_change = min(-1, int(effective_change * modifier_effects.loss_multiplier))
+
+        # Clamp to modifier-adjusted score bounds
+        effective_max = self.config.max_score + (
+            modifier_effects.ceiling_offset if modifier_effects else 0
+        )
+        effective_min = self.config.min_score
         new_live = current_live + effective_change
-        if new_live > self.config.max_score:
-            effective_change = self.config.max_score - current_live
-        elif new_live < self.config.min_score:
-            effective_change = self.config.min_score - current_live
+        if new_live > effective_max:
+            effective_change = effective_max - current_live
+        elif new_live < effective_min:
+            effective_change = effective_min - current_live
 
         if effective_change == 0:
             rel = await self.get_relationship(char_a, char_b, rp_folder, branch)

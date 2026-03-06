@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from rp_engine.dependencies import (
     get_analysis_pipeline,
     get_branch_manager,
     get_db,
+    get_lance_store,
     get_state_manager,
 )
 from rp_engine.models.exchange import (
@@ -65,6 +67,7 @@ async def save_exchange(
     pipeline: AnalysisPipeline | None = Depends(get_analysis_pipeline),
     state_manager: StateManager = Depends(get_state_manager),
     branch_manager: BranchManager = Depends(get_branch_manager),
+    lance_store=Depends(get_lance_store),
 ):
     """Save a user+assistant exchange. Handles idempotency and rewinds.
 
@@ -198,6 +201,22 @@ async def save_exchange(
     )
     exchange_id = await future
 
+    # Background vector embedding (non-blocking, independent of LLM analysis)
+    if lance_store is not None:
+        async def _embed():
+            try:
+                await lance_store.embed_exchange(
+                    exchange_number=exchange_number,
+                    user_message=body.user_message,
+                    assistant_response=body.assistant_response,
+                    rp_folder=rp_folder,
+                    branch=branch,
+                    session_id=session_id,
+                )
+            except Exception as e:
+                logger.warning("Background exchange embedding failed: %s", e)
+        asyncio.create_task(_embed())
+
     # Enqueue for async analysis pipeline (Phase 5)
     if pipeline is not None:
         await pipeline.enqueue(exchange_id, rp_folder, branch)
@@ -270,6 +289,7 @@ async def recent_exchanges(
 async def delete_exchange(
     exchange_id: int,
     db: Database = Depends(get_db),
+    lance_store=Depends(get_lance_store),
 ):
     """Delete an exchange (deprecated — prefer rewind via branch creation).
 
@@ -287,5 +307,13 @@ async def delete_exchange(
         priority=PRIORITY_EXCHANGE,
     )
     await future
+
+    # Keep vector store in sync — remove vectors for this exchange
+    if lance_store:
+        rp_folder = row.get("rp_folder", "")
+        branch = row.get("branch", "main")
+        exchange_number = row.get("exchange_number", 0)
+        if exchange_number > 0:
+            await lance_store.rewind_exchanges(rp_folder, branch, exchange_number - 1)
 
     return {"deleted": True, "exchange_id": exchange_id}

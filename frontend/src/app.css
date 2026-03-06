@@ -1,48 +1,87 @@
 @import "tailwindcss";
 
 @theme {
-	--color-bg: #0f0f0f;
-	--color-surface: #1a1a1a;
-	--color-surface2: #242424;
-	--color-border-custom: #333333;
-	--color-text: #e0e0e0;
-	--color-text-dim: #888888;
-	--color-accent: #7c6fe0;
-	--color-accent-hover: #9589f0;
-	--color-success: #4caf50;
-	--color-error: #ef5350;
-	--color-warning: #ffa726;
+	/* -- Surface palette -- */
+	--color-bg: #f4f0e8;
+	--color-bg-subtle: #ece7dc;
+	--color-surface: #faf8f3;
+	--color-surface-raised: #ffffff;
+	--color-border-custom: #ddd6c9;
+	--color-border-subtle: #e8e2d7;
+	--color-border-warm: #d4c9b8;
+
+	/* -- Text palette -- */
+	--color-text: #38322b;
+	--color-text-dim: #847a6e;
+	--color-text-muted: #b0a698;
+
+	/* -- Accent (sage green) -- */
+	--color-accent: #6d8c5e;
+	--color-accent-hover: #5a7a4d;
+	--color-accent-soft: rgba(109, 140, 94, 0.10);
+	--color-accent-border: rgba(109, 140, 94, 0.25);
+
+	/* -- Warm (copper / amber) -- */
+	--color-warm: #c4956a;
+	--color-warm-soft: rgba(196, 149, 106, 0.12);
+	--color-warm-border: rgba(196, 149, 106, 0.30);
+	--color-warm-deep: #a87e58;
+
+	/* -- Gold (decorative) -- */
+	--color-gold: #b89f6a;
+	--color-gold-soft: rgba(184, 159, 106, 0.12);
+	--color-gold-border: rgba(184, 159, 106, 0.35);
+
+	/* -- Semantic -- */
+	--color-success: #6d8c5e;
+	--color-error: #b85c55;
+	--color-warning: #c4956a;
+	--color-error-soft: rgba(184, 92, 85, 0.10);
+	--color-success-soft: rgba(109, 140, 94, 0.10);
+	--color-warning-soft: rgba(196, 149, 106, 0.12);
 }
 
 :root {
-	--background: 0 0% 5.9%;
-	--foreground: 0 0% 87.8%;
-	--card: 0 0% 10.2%;
-	--card-foreground: 0 0% 87.8%;
-	--popover: 0 0% 10.2%;
-	--popover-foreground: 0 0% 87.8%;
-	--primary: 255 60% 65%;
-	--primary-foreground: 0 0% 100%;
-	--secondary: 0 0% 14.1%;
-	--secondary-foreground: 0 0% 87.8%;
-	--muted: 0 0% 14.1%;
-	--muted-foreground: 0 0% 53.3%;
-	--accent: 0 0% 14.1%;
-	--accent-foreground: 0 0% 87.8%;
-	--destructive: 0 72% 63%;
-	--destructive-foreground: 0 0% 100%;
-	--border: 0 0% 20%;
-	--input: 0 0% 20%;
-	--ring: 255 60% 65%;
 	--radius: 0.5rem;
+}
+
+@font-face {
+	font-family: 'Lora';
+	font-style: normal;
+	font-weight: 400 700;
+	font-display: swap;
+	src: url('https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&display=swap');
 }
 
 body {
 	background-color: var(--color-bg);
+	background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
 	color: var(--color-text);
-	font-family: 'Inter', system-ui, -apple-system, sans-serif;
+	font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+}
+
+/* -- Serif utility class -- */
+.font-serif {
+	font-family: 'Lora', Georgia, 'Times New Roman', serif;
+}
+
+/* -- Scrollbar -- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border-warm); border-radius: 3px; }
+
+/* -- Selection -- */
+::selection {
+	background: var(--color-accent-soft);
+	color: var(--color-accent);
+}
+
+/* -- Focus ring -- */
+input:focus, select:focus, textarea:focus {
+	border-color: var(--color-accent-border) !important;
+	outline: none;
 }
 
 * {
-	border-color: hsl(var(--border));
+	border-color: var(--color-border-custom);
 }

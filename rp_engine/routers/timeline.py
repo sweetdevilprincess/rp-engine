@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+import logging
 
+from fastapi import APIRouter, Depends, Query
+
+logger = logging.getLogger(__name__)
+
+from rp_engine.database import Database
+from rp_engine.dependencies import get_db
 from rp_engine.models.timeline import (
     DivergencePoint,
     TimelineBranch,
@@ -26,13 +32,12 @@ def _snippet(text: str | None, max_len: int = SNIPPET_LENGTH) -> str:
 
 @router.get("", response_model=TimelineResponse)
 async def get_timeline(
-    request: Request,
     rp_folder: str = Query(...),
     include_branches: str | None = Query(None, description="Comma-separated branch names"),
     snippet_length: int = Query(SNIPPET_LENGTH, ge=50, le=500),
+    db: Database = Depends(get_db),
 ):
     """Get a unified timeline view across branches."""
-    db = request.app.state.db
 
     # Get all branches for this RP
     branch_rows = await db.fetch_all(

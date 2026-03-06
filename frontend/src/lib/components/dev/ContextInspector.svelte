@@ -28,22 +28,22 @@
 
 	// Source badge styles
 	const sourceBadge: Record<string, string> = {
-		keyword:     'bg-blue-500/20 text-blue-400',
-		semantic:    'bg-purple-500/20 text-purple-400',
-		graph:       'bg-green-500/20 text-green-400',
-		trigger:     'bg-orange-500/20 text-orange-400',
-		always_load: 'bg-surface2 text-text-dim',
+		keyword:     'bg-accent/15 text-accent',
+		semantic:    'bg-warm/15 text-warm',
+		graph:       'bg-success/15 text-success',
+		trigger:     'bg-gold/15 text-gold',
+		always_load: 'bg-bg-subtle text-text-dim',
 	};
 
 	const alertBadge: Record<string, string> = {
-		gentle:   'bg-warning/20 text-warning',
-		moderate: 'bg-orange-500/20 text-orange-400',
-		strong:   'bg-error/20 text-error',
+		gentle:   'bg-gold/15 text-gold',
+		moderate: 'bg-warm/15 text-warm',
+		strong:   'bg-error/15 text-error',
 	};
 
 	const injectBadge: Record<string, string> = {
-		context_note: 'bg-blue-500/20 text-blue-400',
-		state_alert:  'bg-warning/20 text-warning',
+		context_note: 'bg-accent/15 text-accent',
+		state_alert:  'bg-gold/15 text-gold',
 	};
 
 	// Determine default open state for a section based on data presence
@@ -62,17 +62,17 @@
 
 		<textarea
 			bind:value={message}
-			on:keydown={handleKeydown}
+			onkeydown={handleKeydown}
 			placeholder="Enter a user message to inspect what context the engine would return..."
 			rows="3"
-			class="w-full bg-surface2 border border-border-custom rounded-md px-3 py-2 text-sm text-text
+			class="w-full bg-bg-subtle border border-border-custom rounded-md px-3 py-2 text-sm text-text
 				placeholder:text-text-dim/50 focus:outline-none focus:ring-1 focus:ring-accent resize-none"
 		></textarea>
 
 		<div class="flex items-center gap-3">
 			<button
 				class="text-xs text-text-dim hover:text-text transition-colors"
-				on:click={() => (showLastResponse = !showLastResponse)}
+				onclick={() => (showLastResponse = !showLastResponse)}
 			>
 				{showLastResponse ? '▾' : '▸'} Last response (optional)
 			</button>
@@ -83,7 +83,7 @@
 				bind:value={lastResponse}
 				placeholder="Paste the previous assistant response for better context..."
 				rows="2"
-				class="w-full bg-surface2 border border-border-custom rounded-md px-3 py-2 text-sm text-text
+				class="w-full bg-bg-subtle border border-border-custom rounded-md px-3 py-2 text-sm text-text
 					placeholder:text-text-dim/50 focus:outline-none focus:ring-1 focus:ring-accent resize-none"
 			></textarea>
 		{/if}
@@ -91,7 +91,7 @@
 		<button
 			class="w-full bg-accent hover:bg-accent-hover text-white text-sm font-medium py-2 px-4 rounded-md
 				transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-			on:click={inspect}
+			onclick={inspect}
 			disabled={loading || !message.trim()}
 		>
 			{loading ? 'Inspecting...' : 'Inspect'}
@@ -118,18 +118,18 @@
 
 		<!-- Cards pulled -->
 		<details open={defaultOpen(result.documents.length, true)} class="bg-surface rounded border border-border-custom overflow-hidden">
-			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 				<span class="text-sm font-medium text-text">Cards Pulled</span>
-				<span class="text-xs bg-surface2 text-text-dim px-2 py-0.5 rounded-full">{result.documents.length}</span>
+				<span class="text-xs bg-bg-subtle text-text-dim px-2 py-0.5 rounded-full">{result.documents.length}</span>
 			</summary>
 			{#if result.documents.length > 0}
 				<div class="border-t border-border-custom divide-y divide-border-custom">
 					{#each result.documents as doc}
 						<details class="group">
-							<summary class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-surface2 transition-colors list-none">
-								<span class="text-xs text-text-dim bg-surface2 px-1.5 py-0.5 rounded font-mono">{doc.card_type}</span>
+							<summary class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
+								<span class="text-xs text-text-dim bg-bg-subtle px-1.5 py-0.5 rounded font-mono">{doc.card_type}</span>
 								<span class="text-sm text-text flex-1 min-w-0 truncate">{doc.name}</span>
-								<span class="text-xs px-1.5 py-0.5 rounded {sourceBadge[doc.source] ?? 'bg-surface2 text-text-dim'} shrink-0">
+								<span class="text-xs px-1.5 py-0.5 rounded {sourceBadge[doc.source] ?? 'bg-bg-subtle text-text-dim'} shrink-0">
 									{doc.source}
 								</span>
 								<span class="text-xs text-text-dim shrink-0">{doc.relevance_score.toFixed(3)}</span>
@@ -138,7 +138,7 @@
 								{/if}
 							</summary>
 							{#if doc.summary || doc.content}
-								<div class="px-3 pb-2 pt-1 text-xs text-text-dim border-t border-border-custom bg-surface2/50">
+								<div class="px-3 pb-2 pt-1 text-xs text-text-dim border-t border-border-custom bg-bg-subtle/50">
 									<p class="whitespace-pre-wrap">{doc.summary ?? doc.content}</p>
 								</div>
 							{/if}
@@ -152,15 +152,15 @@
 
 		<!-- NPC Briefs -->
 		<details open={defaultOpen(result.npc_briefs.length, true)} class="bg-surface rounded border border-border-custom overflow-hidden">
-			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 				<span class="text-sm font-medium text-text">NPC Briefs</span>
-				<span class="text-xs bg-surface2 text-text-dim px-2 py-0.5 rounded-full">{result.npc_briefs.length}</span>
+				<span class="text-xs bg-bg-subtle text-text-dim px-2 py-0.5 rounded-full">{result.npc_briefs.length}</span>
 			</summary>
 			{#if result.npc_briefs.length > 0}
 				<div class="border-t border-border-custom divide-y divide-border-custom">
 					{#each result.npc_briefs as npc}
 						<details>
-							<summary class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-surface2 transition-colors list-none">
+							<summary class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 								<span class="text-sm font-medium text-text">{npc.character}</span>
 								{#if npc.archetype}
 									<span class="text-xs text-text-dim">{npc.archetype}</span>
@@ -174,7 +174,7 @@
 									<span class="text-xs text-text-dim shrink-0 italic">{npc.emotional_state}</span>
 								{/if}
 							</summary>
-							<div class="px-3 pb-2 pt-1 space-y-2 border-t border-border-custom bg-surface2/50">
+							<div class="px-3 pb-2 pt-1 space-y-2 border-t border-border-custom bg-bg-subtle/50">
 								{#if npc.behavioral_direction}
 									<p class="text-xs text-text">{npc.behavioral_direction}</p>
 								{/if}
@@ -190,7 +190,7 @@
 									<div class="flex flex-wrap gap-1">
 										<span class="text-xs text-text-dim">Signals:</span>
 										{#each npc.scene_signals as s}
-											<span class="text-xs bg-surface2 text-text-dim px-1.5 py-0.5 rounded">{s}</span>
+											<span class="text-xs bg-bg-subtle text-text-dim px-1.5 py-0.5 rounded">{s}</span>
 										{/each}
 									</div>
 								{/if}
@@ -198,7 +198,7 @@
 									<div class="flex flex-wrap gap-1">
 										<span class="text-xs text-text-dim">Modifiers:</span>
 										{#each npc.behavioral_modifiers as m}
-											<span class="text-xs bg-surface2 text-text-dim px-1.5 py-0.5 rounded">{m}</span>
+											<span class="text-xs bg-bg-subtle text-text-dim px-1.5 py-0.5 rounded">{m}</span>
 										{/each}
 									</div>
 								{/if}
@@ -213,9 +213,9 @@
 
 		<!-- Thread Alerts -->
 		<details open={defaultOpen(result.thread_alerts.length, true)} class="bg-surface rounded border border-border-custom overflow-hidden">
-			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 				<span class="text-sm font-medium text-text">Thread Alerts</span>
-				<span class="text-xs {result.thread_alerts.length > 0 ? 'bg-warning/20 text-warning' : 'bg-surface2 text-text-dim'} px-2 py-0.5 rounded-full">
+				<span class="text-xs {result.thread_alerts.length > 0 ? 'bg-warning/20 text-warning' : 'bg-bg-subtle text-text-dim'} px-2 py-0.5 rounded-full">
 					{result.thread_alerts.length}
 				</span>
 			</summary>
@@ -225,7 +225,7 @@
 						<div class="px-3 py-1.5 space-y-1">
 							<div class="flex items-center gap-2">
 								<span class="text-sm text-text">{alert.name}</span>
-								<span class="text-xs px-1.5 py-0.5 rounded {alertBadge[alert.level] ?? 'bg-surface2 text-text-dim'}">{alert.level}</span>
+								<span class="text-xs px-1.5 py-0.5 rounded {alertBadge[alert.level] ?? 'bg-bg-subtle text-text-dim'}">{alert.level}</span>
 								<span class="text-xs text-text-dim ml-auto">{alert.counter} / {alert.threshold}</span>
 							</div>
 							<p class="text-xs text-text-dim">{alert.consequence}</p>
@@ -239,22 +239,22 @@
 
 		<!-- Triggered Notes -->
 		<details open={defaultOpen(result.triggered_notes.length, true)} class="bg-surface rounded border border-border-custom overflow-hidden">
-			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 				<span class="text-sm font-medium text-text">Triggered Notes</span>
-				<span class="text-xs bg-surface2 text-text-dim px-2 py-0.5 rounded-full">{result.triggered_notes.length}</span>
+				<span class="text-xs bg-bg-subtle text-text-dim px-2 py-0.5 rounded-full">{result.triggered_notes.length}</span>
 			</summary>
 			{#if result.triggered_notes.length > 0}
 				<div class="border-t border-border-custom divide-y divide-border-custom">
 					{#each result.triggered_notes as note}
 						<details>
-							<summary class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-surface2 transition-colors list-none">
+							<summary class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 								<span class="text-sm text-text">{note.trigger_name}</span>
-								<span class="text-xs px-1.5 py-0.5 rounded {injectBadge[note.inject_type] ?? 'bg-surface2 text-text-dim'}">{note.inject_type}</span>
+								<span class="text-xs px-1.5 py-0.5 rounded {injectBadge[note.inject_type] ?? 'bg-bg-subtle text-text-dim'}">{note.inject_type}</span>
 								{#if note.signals_matched.length > 0}
 									<span class="text-xs text-text-dim ml-auto">{note.signals_matched.join(', ')}</span>
 								{/if}
 							</summary>
-							<div class="px-3 pb-2 pt-1 border-t border-border-custom bg-surface2/50">
+							<div class="px-3 pb-2 pt-1 border-t border-border-custom bg-bg-subtle/50">
 								<p class="text-xs text-text whitespace-pre-wrap">{note.content}</p>
 							</div>
 						</details>
@@ -267,9 +267,9 @@
 
 		<!-- Card Gaps -->
 		<details open={defaultOpen(result.card_gaps.length, true)} class="bg-surface rounded border border-border-custom overflow-hidden">
-			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 				<span class="text-sm font-medium text-text">Card Gaps</span>
-				<span class="text-xs {result.card_gaps.length > 0 ? 'bg-warning/20 text-warning' : 'bg-surface2 text-text-dim'} px-2 py-0.5 rounded-full">
+				<span class="text-xs {result.card_gaps.length > 0 ? 'bg-warning/20 text-warning' : 'bg-bg-subtle text-text-dim'} px-2 py-0.5 rounded-full">
 					{result.card_gaps.length}
 				</span>
 			</summary>
@@ -279,7 +279,7 @@
 						<div class="flex items-center gap-2 px-3 py-1.5">
 							<span class="text-sm text-text">{gap.entity_name}</span>
 							{#if gap.suggested_type}
-								<span class="text-xs bg-surface2 text-text-dim px-1.5 py-0.5 rounded">{gap.suggested_type}</span>
+								<span class="text-xs bg-bg-subtle text-text-dim px-1.5 py-0.5 rounded">{gap.suggested_type}</span>
 							{/if}
 							<span class="text-xs text-text-dim ml-auto">seen {gap.seen_count}×</span>
 						</div>
@@ -292,7 +292,7 @@
 
 		<!-- Scene State -->
 		<details open={false} class="bg-surface rounded border border-border-custom overflow-hidden">
-			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 				<span class="text-sm font-medium text-text">Scene State</span>
 			</summary>
 			<div class="border-t border-border-custom px-3 py-2 grid grid-cols-2 gap-1.5 text-xs">
@@ -306,9 +306,9 @@
 		<!-- Character States -->
 		{#if Object.keys(result.character_states).length > 0}
 			<details open={false} class="bg-surface rounded border border-border-custom overflow-hidden">
-				<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+				<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 					<span class="text-sm font-medium text-text">Character States</span>
-					<span class="text-xs bg-surface2 text-text-dim px-2 py-0.5 rounded-full">{Object.keys(result.character_states).length}</span>
+					<span class="text-xs bg-bg-subtle text-text-dim px-2 py-0.5 rounded-full">{Object.keys(result.character_states).length}</span>
 				</summary>
 				<div class="border-t border-border-custom divide-y divide-border-custom">
 					{#each Object.entries(result.character_states) as [name, state]}
@@ -333,15 +333,15 @@
 
 		<!-- Already-loaded References -->
 		<details open={false} class="bg-surface rounded border border-border-custom overflow-hidden">
-			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+			<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 				<span class="text-sm font-medium text-text">Already Loaded</span>
-				<span class="text-xs bg-surface2 text-text-dim px-2 py-0.5 rounded-full">{result.references.length}</span>
+				<span class="text-xs bg-bg-subtle text-text-dim px-2 py-0.5 rounded-full">{result.references.length}</span>
 			</summary>
 			{#if result.references.length > 0}
 				<div class="border-t border-border-custom divide-y divide-border-custom">
 					{#each result.references as ref}
 						<div class="flex items-center gap-2 px-3 py-1.5 text-xs">
-							<span class="text-text-dim bg-surface2 px-1.5 py-0.5 rounded">{ref.card_type}</span>
+							<span class="text-text-dim bg-bg-subtle px-1.5 py-0.5 rounded">{ref.card_type}</span>
 							<span class="text-text">{ref.name}</span>
 							<span class="text-text-dim ml-auto">turn {ref.sent_at_turn}</span>
 						</div>
@@ -355,7 +355,7 @@
 		<!-- Warnings -->
 		{#if result.warnings.length > 0}
 			<details open={true} class="bg-surface rounded-lg border border-error/30 overflow-hidden">
-				<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+				<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 					<span class="text-sm font-medium text-error">Warnings</span>
 					<span class="text-xs bg-error/20 text-error px-2 py-0.5 rounded-full">{result.warnings.length}</span>
 				</summary>
@@ -376,16 +376,16 @@
 		<!-- Writing Constraints -->
 		{#if result.writing_constraints}
 			<details open={false} class="bg-surface rounded border border-border-custom overflow-hidden">
-				<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors list-none">
+				<summary class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-bg-subtle transition-colors list-none">
 					<span class="text-sm font-medium text-text">Writing Constraints</span>
-					<span class="text-xs bg-surface2 text-text-dim px-2 py-0.5 rounded-full">{result.writing_constraints.token_count} tokens</span>
+					<span class="text-xs bg-bg-subtle text-text-dim px-2 py-0.5 rounded-full">{result.writing_constraints.token_count} tokens</span>
 				</summary>
 				<div class="border-t border-border-custom px-3 py-2 space-y-1.5 text-xs">
 					<p class="text-text whitespace-pre-wrap">{result.writing_constraints.text}</p>
 					{#if result.writing_constraints.patterns_included.length > 0}
 						<div class="flex flex-wrap gap-1 pt-1">
 							{#each result.writing_constraints.patterns_included as p}
-								<span class="bg-surface2 text-text-dim px-1.5 py-0.5 rounded">{p}</span>
+								<span class="bg-bg-subtle text-text-dim px-1.5 py-0.5 rounded">{p}</span>
 							{/each}
 						</div>
 					{/if}

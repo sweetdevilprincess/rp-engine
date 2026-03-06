@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
 
 import httpx
 from pydantic import BaseModel
@@ -91,10 +92,63 @@ class LLMClient:
             raise LLMError("No choices in response", status_code=resp.status_code)
 
         content = choices[0].get("message", {}).get("content", "")
+        if not content or not content.strip():
+            logger.warning("LLM returned empty content for model %s", model)
+            raise LLMError("LLM returned empty content", status_code=resp.status_code)
+
         resp_model = data.get("model", model)
         usage = data.get("usage", {})
 
         return LLMResponse(content=content, model=resp_model, usage=usage)
+
+    async def generate_stream(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        temperature: float = 0.6,
+        max_tokens: int = 1500,
+    ) -> AsyncIterator[str]:
+        """Stream a chat completion response, yielding content chunks."""
+        model = model or self._fallback
+
+        body: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with self._semaphore:
+            async with self._client.stream(
+                "POST", OPENROUTER_API_URL, json=body, headers=headers
+            ) as resp:
+                if resp.status_code >= 400:
+                    error_body = await resp.aread()
+                    raise LLMError(
+                        f"OpenRouter API error {resp.status_code}: {error_body.decode()[:500]}",
+                        status_code=resp.status_code,
+                    )
+
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        import json as _json
+                        chunk = _json.loads(data)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            yield content
+                    except (ValueError, IndexError, KeyError):
+                        continue
 
     async def embed(
         self,

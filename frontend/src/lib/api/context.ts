@@ -21,3 +21,15 @@ export async function getGuidelines(rp_folder: string): Promise<GuidelinesRespon
 		skipRPContext: true,
 	});
 }
+
+export async function updateGuidelines(
+	rp_folder: string,
+	body: Partial<GuidelinesResponse>,
+): Promise<GuidelinesResponse> {
+	return apiFetch<GuidelinesResponse>('/api/context/guidelines', {
+		method: 'PUT',
+		params: { rp_folder },
+		body: JSON.stringify(body),
+		skipRPContext: true,
+	});
+}

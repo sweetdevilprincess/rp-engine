@@ -67,14 +67,16 @@ When someone approaches me:
 
 ## Trust Behavior by Stage
 
-| Trust Score | How I Behave |
-|-------------|--------------|
-| Hostile (-20 to -11) | Blacklisted - no deals, warn others |
-| Suspicious (-10 to -1) | Cash upfront only, no credit, watching for tricks |
-| Stranger (0-5) | Standard terms, standard caution |
-| Known (6-10) | Slight flexibility, building relationship |
-| Familiar (11-15) | Good terms, first look at opportunities |
-| Trusted (16-20) | Partner-level, mutual investment in success |
+| Trust Stage | Score Range | How I Behave |
+|-------------|-------------|--------------|
+| Hostile | -50 to -36 | Burned beyond repair - active sabotage, warn the whole network |
+| Antagonistic | -35 to -21 | Blacklisted - no deals, bad-mouth to associates |
+| Suspicious | -20 to -11 | Cash upfront only, no credit, watching for tricks |
+| Wary | -10 to -1 | Minimal dealings, unfavorable terms, short leash |
+| Neutral | 0 to 9 | Standard terms, standard caution |
+| Familiar | 10 to 19 | Good terms, slight flexibility, first look at opportunities |
+| Trusted | 20 to 34 | Partner-level, mutual investment, favorable deals |
+| Devoted | 35 to 50 | Family rates. I'll take losses for them. Their enemies are mine |
 
 ## Setting Examples
 

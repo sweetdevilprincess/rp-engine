@@ -175,6 +175,7 @@ class AnalysisResult(BaseModel):
     events_added: int = 0
     card_gaps_added: int = 0
     thread_alerts: int = 0
+    continuity_warnings: int = 0
     timestamp_advanced: bool = False
     error: str | None = None
 
@@ -241,6 +242,17 @@ class CardAuditResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ThreadEvidence(BaseModel):
+    thread_id: str
+    exchange_number: int
+    keyword_matched: str | None = None
+    chunk_text: str | None = None
+    counter_before: int
+    counter_after: int
+    direction: str
+    created_at: str = ""
+
+
 class ThreadDetail(BaseModel):
     thread_id: str
     name: str
@@ -252,6 +264,7 @@ class ThreadDetail(BaseModel):
     thresholds: dict[str, int] = {}
     consequences: dict[str, str] = {}
     related_characters: list[str] = []
+    evidence: list[ThreadEvidence] = []
 
 
 class ThreadListResponse(BaseModel):

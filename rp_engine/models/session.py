@@ -66,6 +66,28 @@ class SessionEndSummary(BaseModel):
     plot_thread_status: list[PlotThreadStatus] = []
 
 
+class UpdateSessionBody(BaseModel):
+    metadata: dict
+
+
 class SessionEndResponse(BaseModel):
     session: SessionResponse
     summary: SessionEndSummary
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    rp_folder: str
+    branch: str
+    narrative_summary: str
+    key_moments: list[dict] = []
+    generated_at: str
+
+
+class Recap(BaseModel):
+    rp_folder: str
+    branch: str
+    session_id: str | None = None
+    style: str = "standard"
+    recap_text: str
+    generated_at: str

@@ -511,11 +511,7 @@ async def handle_resolve_context(args: dict) -> list[TextContent]:
         body["max_hops"] = args["max_hops"]
     if args.get("max_results") is not None:
         body["max_results"] = args["max_results"]
-    # resolve_context only uses rp_folder as query param
-    params = {}
-    rp_folder = args.get("rp_folder") or os.environ.get("RP_FOLDER", "")
-    if rp_folder:
-        params["rp_folder"] = rp_folder
+    params = _rp_params(args)
     data = await api_post("/api/context/resolve", json_body=body, params=params)
     return _json_result(data)
 
@@ -592,7 +588,8 @@ async def handle_create_card(args: dict) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 
 # Handler dispatch table
-_HANDLERS: dict[str, callable] = {
+from typing import Callable
+_HANDLERS: dict[str, Callable] = {
     "get_scene_context": handle_get_scene_context,
     "save_exchange": handle_save_exchange,
     "get_npc_reaction": handle_get_npc_reaction,

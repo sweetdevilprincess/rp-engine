@@ -6,6 +6,7 @@ the previous exchange is auto-saved before returning context for the new turn.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -14,6 +15,7 @@ from datetime import UTC, datetime
 
 from rp_engine.database import PRIORITY_EXCHANGE, Database
 from rp_engine.services.analysis_pipeline import AnalysisPipeline
+from rp_engine.services.lance_store import LanceStore
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +54,10 @@ class AutoSaveResult:
 class AutoSaveManager:
     """Manages automatic exchange saving when <output> tags are present."""
 
-    def __init__(self, db: Database, analysis_pipeline: AnalysisPipeline) -> None:
+    def __init__(self, db: Database, analysis_pipeline: AnalysisPipeline, lance_store: LanceStore | None = None) -> None:
         self.db = db
         self.analysis_pipeline = analysis_pipeline
+        self.lance_store = lance_store
         self._sessions: dict[str, SessionTracker] = {}
         self._active_rp: bool = False  # Off by default
 
@@ -191,6 +194,22 @@ class AutoSaveManager:
             priority=PRIORITY_EXCHANGE,
         )
         exchange_id = await future
+
+        # Background vector embedding (non-blocking, independent of LLM analysis)
+        if self.lance_store is not None:
+            async def _embed():
+                try:
+                    await self.lance_store.embed_exchange(
+                        exchange_number=exchange_number,
+                        user_message=user_message,
+                        assistant_response=assistant_response,
+                        rp_folder=tracker.rp_folder,
+                        branch=tracker.branch,
+                        session_id=tracker.session_id,
+                    )
+                except Exception as e:
+                    logger.warning("Auto-save embedding failed: %s", e)
+            asyncio.create_task(_embed())
 
         # Enqueue for analysis
         if self.analysis_pipeline is not None:

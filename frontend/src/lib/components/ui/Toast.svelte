@@ -2,24 +2,43 @@
 	import type { Toast } from '$lib/stores/ui';
 	import { removeToast } from '$lib/stores/ui';
 
-	export let toast: Toast;
+	interface Props {
+		toast: Toast;
+	}
+
+	let { toast }: Props = $props();
 
 	const borderColors: Record<string, string> = {
-		success: 'border-l-success',
-		error: 'border-l-error',
-		warning: 'border-l-warning',
-		info: 'border-l-accent',
+		success: 'var(--color-success)',
+		error:   'var(--color-error)',
+		warning: 'var(--color-warm)',
+		info:    'var(--color-accent)',
 	};
 </script>
 
 <div
-	class="bg-surface2 border border-border-custom border-l-4 {borderColors[toast.type]} rounded-md p-3 shadow-lg flex items-start gap-2 animate-in slide-in-from-right"
+	class="toast"
+	style="border-left-color: {borderColors[toast.type] ?? borderColors.info};"
 >
 	<span class="flex-1 text-sm text-text">{toast.message}</span>
 	<button
 		class="text-text-dim hover:text-text text-lg leading-none"
-		on:click={() => removeToast(toast.id)}
+		onclick={() => removeToast(toast.id)}
 	>
 		&times;
 	</button>
 </div>
+
+<style>
+	.toast {
+		background: var(--color-surface-raised);
+		border: 1px solid var(--color-border-custom);
+		border-left-width: 4px;
+		border-radius: 8px;
+		padding: 12px;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+	}
+</style>

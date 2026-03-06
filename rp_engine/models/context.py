@@ -78,6 +78,7 @@ class ThreadAlert(BaseModel):
     counter: int
     threshold: int
     consequence: str
+    evidence_snippets: list[str] = []
 
 
 class TriggeredNote(BaseModel):
@@ -109,6 +110,23 @@ class WritingConstraints(BaseModel):
     token_count: int = 0
 
 
+class PastExchangeHit(BaseModel):
+    exchange_number: int
+    session_id: str | None = None
+    speaker: str
+    text: str
+    score: float
+    in_story_timestamp: str | None = None
+
+
+class ExtractedMemoryHit(BaseModel):
+    description: str
+    significance: str | None = None
+    characters: list[str] = []
+    exchange_number: int | None = None
+    in_story_timestamp: str | None = None
+
+
 class AutoSaveResult(BaseModel):
     exchange_id: int
     exchange_number: int
@@ -128,6 +146,8 @@ class ContextResponse(BaseModel):
     thread_alerts: list[ThreadAlert] = []
     triggered_notes: list[TriggeredNote] = []
     card_gaps: list[CardGap] = []
+    past_exchanges: list[PastExchangeHit] = []
+    extracted_memories: list[ExtractedMemoryHit] = []
     warnings: list[StalenessWarning] = []
     writing_constraints: WritingConstraints | None = None
     auto_saved: AutoSaveResult | None = None

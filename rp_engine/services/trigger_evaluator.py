@@ -11,7 +11,6 @@ Full infix parser deferred to fast-follow.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -413,10 +412,7 @@ class TriggerEvaluator:
         """Compare a DB value against condition using operator."""
         # Handle JSON columns (conditions, behavioral_modifiers)
         if isinstance(db_val, str) and db_val.startswith("["):
-            try:
-                db_val = json.loads(db_val)
-            except (json.JSONDecodeError, TypeError):
-                pass
+            db_val = safe_parse_json_array(db_val) or db_val
 
         if operator == "contains":
             if isinstance(db_val, list):

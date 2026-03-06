@@ -1,5 +1,7 @@
 import { apiFetch } from './client';
-import type { ChunkRow, VectorStats, DebugSearchResult } from '$lib/types';
+import type { ChunkRow, VectorStats, DebugSearchResult, ExchangeChunk } from '$lib/types';
+
+export type { ExchangeChunk };
 
 export async function getVectorStats(): Promise<VectorStats> {
 	return apiFetch<VectorStats>('/api/vectors/stats');
@@ -16,6 +18,24 @@ export async function listChunks(params?: {
 
 export async function getChunksForFile(file_path: string): Promise<ChunkRow[]> {
 	return apiFetch<ChunkRow[]>(`/api/vectors/chunks/${encodeURIComponent(file_path)}`);
+}
+
+export async function listExchangeChunks(params?: {
+	rp_folder?: string;
+	branch?: string;
+	limit?: number;
+}): Promise<ExchangeChunk[]> {
+	return apiFetch<ExchangeChunk[]>('/api/vectors/exchange-chunks', { params });
+}
+
+export async function reindexExchanges(params?: {
+	rp_folder?: string;
+	branch?: string;
+}): Promise<{ status: string; total_exchanges: number; embedded: number; failed: number }> {
+	return apiFetch('/api/vectors/reindex-exchanges', {
+		method: 'POST',
+		params,
+	});
 }
 
 export async function searchDebug(

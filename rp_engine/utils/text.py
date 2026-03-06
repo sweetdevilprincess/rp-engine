@@ -1,8 +1,14 @@
-"""Text chunking and FTS5 query sanitization utilities."""
+"""Text chunking, hashing, and FTS5 query sanitization utilities."""
 
 from __future__ import annotations
 
+import hashlib
 import re
+
+
+def hash_content(text: str) -> str:
+    """SHA-256 hash of text content for change detection."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:

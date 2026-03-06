@@ -197,6 +197,8 @@ class VectorSearch:
 
     async def reindex_all(self, rp_folder: str) -> dict[str, int]:
         """Full reindex from story_cards table."""
+        from rp_engine.utils.frontmatter import parse_frontmatter
+
         cards = await self.db.fetch_all(
             "SELECT file_path, content, card_type FROM story_cards WHERE rp_folder = ?",
             [rp_folder],
@@ -206,8 +208,12 @@ class VectorSearch:
         total_files = 0
         for card in cards:
             if card.get("content"):
+                # Strip YAML frontmatter — only chunk the body text
+                _, body = parse_frontmatter(card["content"])
+                if not body.strip():
+                    continue
                 chunks = await self.index_document(
-                    card["content"],
+                    body,
                     card["file_path"],
                     rp_folder,
                     card.get("card_type"),

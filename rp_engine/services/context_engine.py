@@ -8,7 +8,6 @@ smart endpoint. "Smart API, dumb client."
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,8 +22,10 @@ from rp_engine.models.context import (
     ContextReference,
     ContextRequest,
     ContextResponse,
+    ExtractedMemoryHit,
     FlaggedNPC,
     NPCBrief,
+    PastExchangeHit,
     SceneState,
     StalenessWarning,
     ThreadAlert,
@@ -34,44 +35,19 @@ from rp_engine.models.context import (
 from rp_engine.models.rp import GuidelinesResponse
 from rp_engine.services.entity_extractor import EntityExtractor
 from rp_engine.services.graph_resolver import GraphResolver
+from rp_engine.services.guidelines_service import GuidelinesService
+from rp_engine.services.npc_brief_builder import NPCBriefBuilder
 from rp_engine.services.scene_classifier import SceneClassifier
 from rp_engine.services.trigger_evaluator import TriggerEvaluator
 from rp_engine.services.vector_search import VectorSearch
 from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
+from rp_engine.utils.text import hash_content as _hash_content
+from rp_engine.utils.trust import TRUST_STAGES, trust_stage
 
 logger = logging.getLogger(__name__)
 
-# Trust stage thresholds — expanded -50 to 50 range with 8 stages
-TRUST_STAGES = [
-    (-50, -36, "hostile"),
-    (-35, -21, "antagonistic"),
-    (-20, -11, "suspicious"),
-    (-10,  -1, "wary"),
-    (  0,   9, "neutral"),
-    ( 10,  19, "familiar"),
-    ( 20,  34, "trusted"),
-    ( 35,  50, "devoted"),
-]
-
-# Source priority for ranking (higher = more relevant)
-SOURCE_PRIORITY = {
-    "always_load": 2.0,
-    "keyword": 1.0,
-    "trigger": 0.9,
-    "semantic": 0.8,
-}
-
 # Importance levels that get full NPC briefs
 BRIEF_IMPORTANCE = {"critical", "main", "antagonist", "love_interest"}
-
-
-def trust_stage(score: int) -> str:
-    """Compute trust stage from score in -50 to 50 range."""
-    for low, high, stage in TRUST_STAGES:
-        if low <= score <= high:
-            return stage
-    # Clamp to extremes
-    return TRUST_STAGES[0][2] if score < TRUST_STAGES[0][0] else TRUST_STAGES[-1][2]
 
 
 class ContextEngine:
@@ -87,7 +63,10 @@ class ContextEngine:
         trigger_evaluator: TriggerEvaluator,
         config: ContextConfig,
         vault_root: Path,
+        guidelines_service: GuidelinesService | None = None,
+        npc_brief_builder: NPCBriefBuilder | None = None,
         npc_engine: Any | None = None,
+        lance_store: Any | None = None,
     ) -> None:
         self.db = db
         self.entity_extractor = entity_extractor
@@ -97,7 +76,10 @@ class ContextEngine:
         self.trigger_evaluator = trigger_evaluator
         self.config = config
         self.vault_root = vault_root
+        self.guidelines_service = guidelines_service or GuidelinesService(vault_root)
+        self.npc_brief_builder = npc_brief_builder or NPCBriefBuilder()
         self.npc_engine = npc_engine
+        self.lance_store = lance_store
         self.branch_manager = None
         self.writing_intelligence = None
 
@@ -149,6 +131,8 @@ class ContextEngine:
             card_gaps,
             always_load_cards,
             writing_constraints,
+            past_exchanges,
+            extracted_memories,
         ) = await asyncio.gather(
             self._keyword_match(extraction.matched_entities, rp_folder),
             self._semantic_search(request.user_message, rp_folder),
@@ -156,9 +140,16 @@ class ContextEngine:
             self._get_character_states(rp_folder, branch),
             self._get_guidelines(rp_folder),
             self._get_thread_alerts(rp_folder, branch),
-            self._get_card_gaps(rp_folder),
+            self._get_card_gaps(rp_folder, branch),
             self._get_always_load_cards(rp_folder),
             self._get_writing_constraints(request.user_message, last_response),
+            self._search_past_exchanges(
+                request.user_message, rp_folder, branch, current_turn, session_id
+            ),
+            self._get_extracted_memories(
+                request.user_message, rp_folder, branch,
+                [n.name for n in extraction.active_npcs],
+            ),
         )
 
         # ---- Stage 2.5: Trigger Evaluation (no LLM) ----
@@ -378,7 +369,7 @@ class ContextEngine:
 
             if importance and importance in BRIEF_IMPORTANCE:
                 pre_trust = trust_map.get(npc.name.lower(), 0)
-                brief = self._build_npc_brief_sync(
+                brief = self.npc_brief_builder.build_brief(
                     npc.name, char_row, pre_trust, signal_list
                 )
                 npc_briefs.append(brief)
@@ -421,13 +412,184 @@ class ContextEngine:
             thread_alerts=thread_alerts,
             triggered_notes=triggered_notes,
             card_gaps=card_gaps,
+            past_exchanges=past_exchanges,
+            extracted_memories=extracted_memories,
             warnings=warnings,
             writing_constraints=writing_constraints,
         )
 
+    async def get_continuity_brief(self, rp_folder: str, branch: str) -> dict:
+        """Data-only continuity brief: scene, characters, recent exchanges, threads."""
+        scene = await self.db.fetch_one(
+            """SELECT location, time_of_day, mood, in_story_timestamp
+               FROM scene_state_entries WHERE rp_folder = ? AND branch = ?
+               ORDER BY exchange_number DESC LIMIT 1""",
+            [rp_folder, branch],
+        )
+
+        characters = await self.db.fetch_all(
+            """SELECT sc.name,
+                      cse.location, cse.emotional_state, cse.conditions
+               FROM character_ledger cl
+               JOIN story_cards sc ON cl.card_id = sc.id
+               LEFT JOIN character_state_entries cse ON (
+                   cse.card_id = cl.card_id AND cse.rp_folder = cl.rp_folder AND cse.branch = cl.branch
+                   AND cse.exchange_number = (
+                       SELECT MAX(exchange_number) FROM character_state_entries
+                       WHERE card_id = cl.card_id AND rp_folder = cl.rp_folder AND branch = cl.branch
+                   )
+               )
+               WHERE cl.rp_folder = ? AND cl.branch = ? AND cl.status = 'active'""",
+            [rp_folder, branch],
+        )
+
+        exchanges = await self.db.fetch_all(
+            """SELECT exchange_number, user_message, assistant_response, in_story_timestamp
+               FROM exchanges WHERE rp_folder = ? AND branch = ?
+               ORDER BY exchange_number DESC LIMIT 3""",
+            [rp_folder, branch],
+        )
+
+        threads = await self.db.fetch_all(
+            """SELECT pt.name, pt.status, pt.phase, COALESCE(tc.current_counter, 0) as counter
+               FROM plot_threads pt
+               LEFT JOIN thread_counters tc ON pt.id = tc.thread_id AND pt.rp_folder = tc.rp_folder AND tc.branch = ?
+               WHERE pt.rp_folder = ? AND pt.status = 'active'""",
+            [branch, rp_folder],
+        )
+
+        return {
+            "scene": dict(scene) if scene else None,
+            "characters": [dict(c) for c in characters],
+            "recent_exchanges": [dict(e) for e in exchanges],
+            "active_threads": [dict(t) for t in threads],
+        }
+
     # ===================================================================
     # Helper methods
     # ===================================================================
+
+    async def _search_past_exchanges(
+        self,
+        user_message: str,
+        rp_folder: str,
+        branch: str,
+        current_exchange: int,
+        session_id: str | None,
+    ) -> list[PastExchangeHit]:
+        """Search LanceDB for relevant past exchange chunks."""
+        if not self.lance_store:
+            return []
+
+        try:
+            results = await self.lance_store.search_exchanges(
+                query_text=user_message,
+                rp_folder=rp_folder,
+                branch=branch,
+                limit=self.config.max_past_exchanges * 2,
+                max_exchange=current_exchange,
+            )
+        except Exception as e:
+            logger.warning("Past exchange search failed: %s", e)
+            return []
+
+        # Filter and deduplicate
+        exclude_threshold = current_exchange - self.config.exclude_recent_exchanges
+        seen_exchanges: dict[int, PastExchangeHit] = {}
+
+        for r in results:
+            ex_num = r.metadata.get("exchange_number", 0)
+
+            # Skip recent exchanges already in context window
+            if ex_num >= exclude_threshold:
+                continue
+
+            # Skip results from current session that are very recent
+            r_session = r.metadata.get("session_id")
+            if session_id and r_session == session_id and ex_num >= current_exchange - 5:
+                continue
+
+            # Score threshold
+            if r.score < self.config.past_exchange_min_score:
+                continue
+
+            # Keep highest-scoring chunk per exchange
+            if ex_num not in seen_exchanges or r.score > seen_exchanges[ex_num].score:
+                seen_exchanges[ex_num] = PastExchangeHit(
+                    exchange_number=ex_num,
+                    session_id=r_session,
+                    speaker=r.metadata.get("speaker", "unknown"),
+                    text=r.text,
+                    score=r.score,
+                    in_story_timestamp=r.metadata.get("in_story_timestamp"),
+                )
+
+        # Return top N sorted by score
+        hits = sorted(seen_exchanges.values(), key=lambda h: h.score, reverse=True)
+        return hits[: self.config.max_past_exchanges]
+
+    async def _get_extracted_memories(
+        self,
+        user_message: str,
+        rp_folder: str,
+        branch: str,
+        active_npc_names: list[str],
+    ) -> list[ExtractedMemoryHit]:
+        """Load relevant extracted memories from the analysis pipeline."""
+        try:
+            rows = await self.db.fetch_all(
+                """SELECT em.description, em.significance, em.characters,
+                          em.in_story_timestamp, e.exchange_number
+                   FROM extracted_memories em
+                   LEFT JOIN exchanges e ON em.exchange_id = e.id
+                   WHERE em.rp_folder = ? AND em.branch = ?
+                   ORDER BY em.id DESC
+                   LIMIT ?""",
+                [rp_folder, branch, self.config.max_extracted_memories * 3],
+            )
+        except Exception as e:
+            logger.warning("Extracted memories query failed: %s", e)
+            return []
+
+        if not rows:
+            return []
+
+        # Score memories by relevance to current context
+        msg_lower = user_message.lower()
+        msg_words = set(msg_lower.split())
+        npc_names_lower = {n.lower() for n in active_npc_names}
+
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            desc = (row.get("description") or "").lower()
+            characters_raw = row.get("characters") or "[]"
+            characters = safe_parse_json_list(characters_raw)
+            char_names_lower = {c.lower() for c in characters if c}
+
+            # Score: keyword overlap + NPC mention bonus
+            desc_words = set(desc.split())
+            overlap = len(msg_words & desc_words)
+            score = overlap / max(len(msg_words), 1)
+
+            # Boost if memory mentions active NPCs
+            if npc_names_lower & char_names_lower:
+                score += 0.3
+
+            if score >= self.config.extracted_memory_min_score:
+                scored.append((score, row, characters))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        return [
+            ExtractedMemoryHit(
+                description=row.get("description", ""),
+                significance=row.get("significance"),
+                characters=chars,
+                exchange_number=row.get("exchange_number"),
+                in_story_timestamp=row.get("in_story_timestamp"),
+            )
+            for _, row, chars in scored[: self.config.max_extracted_memories]
+        ]
 
     async def _get_last_response(self, rp_folder: str, branch: str) -> str | None:
         """Get the most recent assistant response from exchanges."""
@@ -547,29 +709,8 @@ class ContextEngine:
         return states
 
     async def _get_guidelines(self, rp_folder: str) -> GuidelinesResponse | None:
-        """Load RP guidelines."""
-        from rp_engine.utils.frontmatter import parse_file
-
-        guidelines_path = self.vault_root / rp_folder / "RP State" / "Story_Guidelines.md"
-        if not guidelines_path.exists():
-            return None
-
-        try:
-            frontmatter, _ = parse_file(guidelines_path)
-            if frontmatter:
-                return GuidelinesResponse(
-                    pov_mode=frontmatter.get("pov_mode"),
-                    dual_characters=frontmatter.get("dual_characters", []),
-                    narrative_voice=frontmatter.get("narrative_voice"),
-                    tense=frontmatter.get("tense"),
-                    tone=frontmatter.get("tone"),
-                    scene_pacing=frontmatter.get("scene_pacing"),
-                    integrate_user_narrative=frontmatter.get("integrate_user_narrative"),
-                )
-        except Exception as e:
-            logger.warning("Failed to parse guidelines: %s", e)
-
-        return None
+        """Load RP guidelines via GuidelinesService."""
+        return self.guidelines_service.get_guidelines(rp_folder)
 
     async def _get_writing_constraints(
         self, user_message: str, last_response: str | None
@@ -641,6 +782,22 @@ class ContextEngine:
                 elif isinstance(consequences, str):
                     consequence = consequences
 
+                # Pull evidence snippets for near-threshold threads
+                evidence_snippets: list[str] = []
+                try:
+                    evidence_rows = await self.db.fetch_all(
+                        """SELECT chunk_text FROM thread_evidence
+                           WHERE thread_id = ? AND rp_folder = ? AND branch = ?
+                             AND chunk_text IS NOT NULL
+                           ORDER BY exchange_number DESC LIMIT 5""",
+                        [thread["id"], rp_folder, branch],
+                    )
+                    evidence_snippets = [
+                        r["chunk_text"] for r in evidence_rows if r["chunk_text"]
+                    ]
+                except Exception:
+                    pass
+
                 alerts.append(ThreadAlert(
                     thread_id=thread["id"],
                     name=thread["name"],
@@ -648,15 +805,16 @@ class ContextEngine:
                     counter=counter,
                     threshold=best_threshold,
                     consequence=consequence,
+                    evidence_snippets=evidence_snippets,
                 ))
 
         return alerts
 
-    async def _get_card_gaps(self, rp_folder: str) -> list[CardGap]:
+    async def _get_card_gaps(self, rp_folder: str, branch: str = "main") -> list[CardGap]:
         """Load card gap tracking data."""
         rows = await self.db.fetch_all(
-            "SELECT entity_name, seen_count, suggested_type FROM card_gaps WHERE rp_folder = ? ORDER BY seen_count DESC LIMIT 10",
-            [rp_folder],
+            "SELECT entity_name, seen_count, suggested_type FROM card_gaps WHERE rp_folder = ? AND branch = ? ORDER BY seen_count DESC LIMIT 10",
+            [rp_folder, branch],
         )
         return [
             CardGap(
@@ -668,95 +826,12 @@ class ContextEngine:
         ]
 
     async def _get_always_load_cards(self, rp_folder: str) -> list[dict]:
-        """Load cards marked as always_load in frontmatter."""
-        rows = await self.db.fetch_all(
+        """Load cards marked as always_load via indexed column."""
+        return await self.db.fetch_all(
             """SELECT id, name, card_type, file_path, content, summary, content_hash, frontmatter
-               FROM story_cards WHERE rp_folder = ?""",
+               FROM story_cards WHERE rp_folder = ? AND always_load = 1""",
             [rp_folder],
         )
-        always_load = []
-        for row in rows:
-            fm_raw = row.get("frontmatter")
-            if fm_raw:
-                fm = safe_parse_json(fm_raw)
-                if fm.get("always_load"):
-                    always_load.append(row)
-        return always_load
-
-    def _build_npc_brief_sync(
-        self,
-        name: str,
-        char_row: dict | None,
-        pre_trust: int,
-        signal_list: list[str],
-    ) -> NPCBrief:
-        """Build a behavioral brief using pre-fetched data (no DB queries)."""
-        archetype = char_row.get("primary_archetype") if char_row else None
-        secondary = char_row.get("secondary_archetype") if char_row else None
-        modifiers_raw = char_row.get("behavioral_modifiers") if char_row else None
-        emotional = char_row.get("emotional_state") if char_row else None
-        conditions_raw = char_row.get("conditions") if char_row else None
-        importance = char_row.get("importance") if char_row else None
-
-        modifiers = safe_parse_json_list(modifiers_raw)
-        conditions = safe_parse_json_list(conditions_raw)
-
-        stage = trust_stage(pre_trust)
-
-        direction = self._build_behavioral_direction(
-            archetype, stage, modifiers, signal_list
-        )
-
-        return NPCBrief(
-            character=name,
-            importance=importance,
-            archetype=archetype,
-            secondary_archetype=secondary,
-            behavioral_modifiers=modifiers if isinstance(modifiers, list) else [],
-            trust_score=pre_trust,
-            trust_stage=stage,
-            emotional_state=emotional,
-            conditions=conditions if isinstance(conditions, list) else [],
-            behavioral_direction=direction,
-            scene_signals=signal_list,
-        )
-
-    def _build_behavioral_direction(
-        self,
-        archetype: str | None,
-        stage: str,
-        modifiers: list[str],
-        signals: list[str],
-    ) -> str:
-        """Build a deterministic behavioral direction string (no LLM)."""
-        parts: list[str] = []
-
-        if archetype:
-            parts.append(f"Archetype: {archetype}")
-
-        parts.append(f"Trust: {stage}")
-
-        if modifiers:
-            parts.append(f"Modifiers: {', '.join(modifiers)}")
-
-        if signals:
-            parts.append(f"Scene: {', '.join(signals)}")
-
-        # Behavioral guidance based on trust stage
-        guidance_map = {
-            "hostile": "Actively opposes. May betray or sabotage.",
-            "antagonistic": "Open opposition. Refuses cooperation.",
-            "suspicious": "Withholds information. Questions motives.",
-            "wary": "Cautious engagement. Minimal vulnerability.",
-            "neutral": "No strong feelings. Transactional interactions.",
-            "familiar": "Willing to help. Some warmth and openness.",
-            "trusted": "Confides freely. Protects and invests in relationship.",
-            "devoted": "Deep loyalty. Will sacrifice for this person.",
-        }
-        if stage in guidance_map:
-            parts.append(f"Direction: {guidance_map[stage]}")
-
-        return " | ".join(parts)
 
     async def _get_warnings(
         self, rp_folder: str, branch: str
@@ -778,7 +853,3 @@ class ContextEngine:
             for r in rows
         ]
 
-
-def _hash_content(content: str) -> str:
-    """Quick hash for content change detection."""
-    return hashlib.sha256(content.encode()).hexdigest()

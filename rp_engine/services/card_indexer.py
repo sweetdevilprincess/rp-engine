@@ -6,14 +6,14 @@ Two-pass indexing: (1) build entity+alias maps, (2) extract connections.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 from pathlib import Path
 from typing import Any
 
 from rp_engine.database import PRIORITY_REINDEX, Database
-from rp_engine.utils.frontmatter import parse_file
+from rp_engine.utils.text import hash_content
+from rp_engine.utils.frontmatter import parse_file, parse_frontmatter
 from rp_engine.utils.normalization import (
     file_to_key,
     id_to_key,
@@ -101,9 +101,10 @@ CONNECTION_RULES: list[tuple[str, str, str]] = [
 class CardIndexer:
     """Indexes story card .md files into SQLite for fast entity/connection lookup."""
 
-    def __init__(self, db: Database, vault_root: Path) -> None:
+    def __init__(self, db: Database, vault_root: Path, vector_search=None) -> None:
         self.db = db
         self.vault_root = vault_root
+        self.vector_search = vector_search
 
     # ------------------------------------------------------------------
     # Public API
@@ -135,7 +136,9 @@ class CardIndexer:
             md_files.extend(chapters_dir.rglob("*.md"))
 
         for file_path in md_files:
-            frontmatter, body = parse_file(file_path)
+            # Read file once, parse frontmatter from the text
+            raw_content = file_path.read_text(encoding="utf-8")
+            frontmatter, body = parse_frontmatter(raw_content)
             if frontmatter is None:
                 continue
 
@@ -146,8 +149,7 @@ class CardIndexer:
                 continue
 
             entity_id = f"{rp_folder}:{normalize_key(name)}"
-            content = file_path.read_text(encoding="utf-8")
-            content_hash = self._compute_content_hash(content)
+            content_hash = self._compute_content_hash(raw_content)
 
             entities[entity_id] = {
                 "id": entity_id,
@@ -158,10 +160,11 @@ class CardIndexer:
                 "importance": frontmatter.get("importance"),
                 "summary": frontmatter.get("summary"),
                 "frontmatter": frontmatter,
-                "content": content,
+                "content": raw_content,
                 "content_hash": content_hash,
                 "file_mtime": file_path.stat().st_mtime,
                 "body": body,
+                "always_load": bool(frontmatter.get("always_load")),
             }
 
             # Build alias map
@@ -176,13 +179,14 @@ class CardIndexer:
             future = await self.db.enqueue_write(
                 """INSERT OR REPLACE INTO story_cards
                    (id, rp_folder, file_path, card_type, name, importance, summary,
-                    frontmatter, content, content_hash, file_mtime, indexed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    frontmatter, content, content_hash, file_mtime, always_load, indexed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
                 [
                     data["id"], data["rp_folder"], data["file_path"],
                     data["card_type"], data["name"], data["importance"],
                     data["summary"], json.dumps(data["frontmatter"], default=str),
                     data["content"], data["content_hash"], data["file_mtime"],
+                    data["always_load"],
                 ],
                 priority=PRIORITY_REINDEX,
             )
@@ -237,16 +241,34 @@ class CardIndexer:
                 await future
                 connection_count += 1
 
+        # Vector chunking — populate SQLite vectors table for search
+        chunk_count = 0
+        if self.vector_search:
+            for _eid, data in entities.items():
+                body = data.get("body", "").strip()
+                if body:
+                    try:
+                        chunks = await self.vector_search.index_document(
+                            content=body,
+                            file_path=data["file_path"],
+                            rp_folder=rp_folder,
+                            card_type=data["card_type"],
+                        )
+                        chunk_count += chunks
+                    except Exception as e:
+                        logger.warning("Vector indexing failed for %s: %s", data["name"], e)
+
         elapsed = (time.monotonic() - start) * 1000
         logger.info(
-            "Full index of %s: %d entities, %d connections, %d aliases, %d keywords (%.0fms)",
-            rp_folder, len(entities), connection_count, alias_count, keyword_count, elapsed,
+            "Full index of %s: %d entities, %d connections, %d aliases, %d keywords, %d chunks (%.0fms)",
+            rp_folder, len(entities), connection_count, alias_count, keyword_count, chunk_count, elapsed,
         )
         return {
             "entities": len(entities),
             "connections": connection_count,
             "aliases": alias_count,
             "keywords": keyword_count,
+            "chunks": chunk_count,
             "duration_ms": elapsed,
         }
 
@@ -255,7 +277,8 @@ class CardIndexer:
         if not file_path.exists() or file_path.suffix != ".md":
             return False
 
-        frontmatter, _body = parse_file(file_path)
+        raw_content = file_path.read_text(encoding="utf-8")
+        frontmatter, body = parse_frontmatter(raw_content)
         if frontmatter is None:
             return False
 
@@ -266,8 +289,7 @@ class CardIndexer:
             return False
 
         entity_id = f"{rp_folder}:{normalize_key(name)}"
-        content = file_path.read_text(encoding="utf-8")
-        content_hash = self._compute_content_hash(content)
+        content_hash = self._compute_content_hash(raw_content)
 
         # Check if unchanged
         existing = await self.db.fetch_one(
@@ -285,13 +307,14 @@ class CardIndexer:
         future = await self.db.enqueue_write(
             """INSERT OR REPLACE INTO story_cards
                (id, rp_folder, file_path, card_type, name, importance, summary,
-                frontmatter, content, content_hash, file_mtime, indexed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                frontmatter, content, content_hash, file_mtime, always_load, indexed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
             [
                 entity_id, rp_folder, str(rel_path).replace("\\", "/"),
                 card_type, name, frontmatter.get("importance"),
                 frontmatter.get("summary"), json.dumps(frontmatter),
-                content, content_hash, file_path.stat().st_mtime,
+                raw_content, content_hash, file_path.stat().st_mtime,
+                bool(frontmatter.get("always_load")),
             ],
             priority=PRIORITY_REINDEX,
         )
@@ -332,6 +355,18 @@ class CardIndexer:
                 priority=PRIORITY_REINDEX,
             )
             await future
+
+        # Vector chunking for this file (body only, no frontmatter)
+        if self.vector_search:
+            try:
+                await self.vector_search.index_document(
+                    content=body,
+                    file_path=str(rel_path).replace("\\", "/"),
+                    rp_folder=rp_folder,
+                    card_type=card_type,
+                )
+            except Exception as e:
+                logger.warning("Vector indexing failed for %s: %s", rel_path, e)
 
         logger.info("Indexed file: %s → %s", rel_path, entity_id)
         return True
@@ -415,7 +450,7 @@ class CardIndexer:
     @staticmethod
     def _compute_content_hash(content: str) -> str:
         """SHA-256 hash of file content for change detection."""
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return hash_content(content)
 
     # ------------------------------------------------------------------
     # Internal: Connection extraction

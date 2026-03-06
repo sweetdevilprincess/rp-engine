@@ -7,6 +7,7 @@ SQLite BLOB-based vector storage from vector_search.py.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -72,23 +73,22 @@ class LanceStore:
         self.db_path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self.db_path))
 
-        # Create or open tables
-        if "exchange_vectors" not in self._db.table_names():
-            # Create empty table with schema
+        # Open or create tables (try open first, create if missing)
+        try:
+            self._exchange_table = self._db.open_table("exchange_vectors")
+        except Exception:
             self._exchange_table = self._db.create_table(
                 "exchange_vectors",
                 schema=EXCHANGE_SCHEMA,
             )
-        else:
-            self._exchange_table = self._db.open_table("exchange_vectors")
 
-        if "card_vectors" not in self._db.table_names():
+        try:
+            self._card_table = self._db.open_table("card_vectors")
+        except Exception:
             self._card_table = self._db.create_table(
                 "card_vectors",
                 schema=CARD_SCHEMA,
             )
-        else:
-            self._card_table = self._db.open_table("card_vectors")
 
         logger.info("LanceDB initialized at %s", self.db_path)
 
@@ -103,7 +103,7 @@ class LanceStore:
         in_story_timestamp: str | None = None,
     ) -> int:
         """Chunk and embed an exchange (user + assistant). Returns chunk count."""
-        if not self._embed_fn or not self._exchange_table:
+        if self._embed_fn is None or self._exchange_table is None:
             return 0
 
         from rp_engine.utils.text import chunk_text
@@ -111,7 +111,7 @@ class LanceStore:
         chunks_data = []
 
         # Embed user message
-        user_chunks = chunk_text(user_message, chunk_size=500, overlap=50)
+        user_chunks = chunk_text(user_message, chunk_size=1000, overlap=200)
         for chunk in user_chunks:
             chunks_data.append({
                 "text": chunk,
@@ -124,7 +124,7 @@ class LanceStore:
             })
 
         # Embed assistant response
-        asst_chunks = chunk_text(assistant_response, chunk_size=500, overlap=50)
+        asst_chunks = chunk_text(assistant_response, chunk_size=1000, overlap=200)
         for chunk in asst_chunks:
             chunks_data.append({
                 "text": chunk,
@@ -151,7 +151,7 @@ class LanceStore:
         for i, chunk_data in enumerate(chunks_data):
             chunk_data["vector"] = embeddings[i] if i < len(embeddings) else [0.0] * self._dimension
 
-        self._exchange_table.add(chunks_data)
+        await asyncio.to_thread(self._exchange_table.add, chunks_data)
         return len(chunks_data)
 
     async def embed_card(
@@ -163,14 +163,14 @@ class LanceStore:
         file_path: str | None = None,
     ) -> int:
         """Chunk and embed a story card. Returns chunk count."""
-        if not self._embed_fn or not self._card_table:
+        if self._embed_fn is None or self._card_table is None:
             return 0
 
         from rp_engine.utils.text import chunk_text
 
         # Remove existing vectors for this card
         try:
-            self._card_table.delete(f'card_id = "{card_id}"')
+            await asyncio.to_thread(self._card_table.delete, f'card_id = "{card_id}"')
         except Exception:
             pass  # Table may be empty
 
@@ -197,7 +197,7 @@ class LanceStore:
                 "total_chunks": len(chunks),
             })
 
-        self._card_table.add(records)
+        await asyncio.to_thread(self._card_table.add, records)
         return len(records)
 
     async def search_exchanges(
@@ -209,7 +209,7 @@ class LanceStore:
         max_exchange: int | None = None,
     ) -> list[LanceSearchResult]:
         """Search exchange vectors for relevant past conversations."""
-        if not self._embed_fn or not self._exchange_table:
+        if self._embed_fn is None or self._exchange_table is None:
             return []
 
         try:
@@ -220,13 +220,15 @@ class LanceStore:
             return []
 
         try:
-            query = (
-                self._exchange_table.search(query_vec)
-                .where(f'rp_folder = "{rp_folder}" AND branch = "{branch}"')
-                .limit(limit)
-            )
+            def _search():
+                return (
+                    self._exchange_table.search(query_vec)
+                    .where(f'rp_folder = "{rp_folder}" AND branch = "{branch}"')
+                    .limit(limit)
+                    .to_list()
+                )
 
-            results = query.to_list()
+            results = await asyncio.to_thread(_search)
         except Exception as e:
             logger.warning("Exchange vector search failed: %s", e)
             return []
@@ -255,7 +257,7 @@ class LanceStore:
         limit: int = 10,
     ) -> list[LanceSearchResult]:
         """Search card vectors for relevant story cards."""
-        if not self._embed_fn or not self._card_table:
+        if self._embed_fn is None or self._card_table is None:
             return []
 
         try:
@@ -266,12 +268,15 @@ class LanceStore:
             return []
 
         try:
-            results = (
-                self._card_table.search(query_vec)
-                .where(f'rp_folder = "{rp_folder}"')
-                .limit(limit)
-                .to_list()
-            )
+            def _search():
+                return (
+                    self._card_table.search(query_vec)
+                    .where(f'rp_folder = "{rp_folder}"')
+                    .limit(limit)
+                    .to_list()
+                )
+
+            results = await asyncio.to_thread(_search)
         except Exception as e:
             logger.warning("Card vector search failed: %s", e)
             return []
@@ -297,15 +302,112 @@ class LanceStore:
         after_exchange: int,
     ) -> None:
         """Delete exchange vectors after a given exchange number (for rewind)."""
-        if not self._exchange_table:
+        if self._exchange_table is None:
             return
         try:
-            self._exchange_table.delete(
+            await asyncio.to_thread(
+                self._exchange_table.delete,
                 f'rp_folder = "{rp_folder}" AND branch = "{branch}" '
-                f"AND exchange_number > {after_exchange}"
+                f"AND exchange_number > {after_exchange}",
             )
         except Exception as e:
             logger.warning("Exchange vector rewind failed: %s", e)
+
+    async def list_exchange_chunks(
+        self,
+        rp_folder: str | None = None,
+        branch: str = "main",
+        limit: int = 200,
+    ) -> list[dict]:
+        """List exchange chunks from LanceDB for the Chunk Viewer."""
+        if self._exchange_table is None:
+            return []
+
+        try:
+            def _fetch():
+                table = self._exchange_table.to_arrow()
+                return table.to_pylist()
+
+            rows = await asyncio.to_thread(_fetch)
+
+            # Filter in Python
+            if rp_folder:
+                rows = [r for r in rows if r.get("rp_folder") == rp_folder]
+            if branch:
+                rows = [r for r in rows if r.get("branch") == branch]
+
+            # Strip vector data for response size
+            for r in rows:
+                r.pop("vector", None)
+
+            return rows[:limit]
+        except Exception as e:
+            logger.warning("Failed to list exchange chunks: %s", e)
+            return []
+
+    async def reindex_exchanges(
+        self,
+        db,
+        rp_folder: str | None = None,
+        branch: str = "main",
+    ) -> dict:
+        """Re-embed all exchanges from the database. Returns stats."""
+        if self._embed_fn is None or self._exchange_table is None:
+            return {"status": "skipped", "reason": "no embed_fn or table"}
+
+        # Clear existing exchange vectors for this scope
+        try:
+            if rp_folder:
+                await asyncio.to_thread(
+                    self._exchange_table.delete,
+                    f'rp_folder = "{rp_folder}" AND branch = "{branch}"',
+                )
+            else:
+                await asyncio.to_thread(
+                    self._exchange_table.delete,
+                    "rp_folder IS NOT NULL",
+                )
+        except Exception:
+            pass
+
+        # Load exchanges
+        if rp_folder:
+            rows = await db.fetch_all(
+                "SELECT * FROM exchanges WHERE rp_folder = ? AND branch = ? ORDER BY exchange_number",
+                [rp_folder, branch],
+            )
+        else:
+            rows = await db.fetch_all(
+                "SELECT * FROM exchanges ORDER BY rp_folder, branch, exchange_number"
+            )
+
+        embedded = 0
+        failed = 0
+        for row in rows:
+            try:
+                count = await self.embed_exchange(
+                    exchange_number=row["exchange_number"],
+                    user_message=row["user_message"],
+                    assistant_response=row["assistant_response"],
+                    rp_folder=row["rp_folder"],
+                    branch=row["branch"],
+                    session_id=row.get("session_id"),
+                    in_story_timestamp=row.get("in_story_timestamp"),
+                )
+                if count > 0:
+                    embedded += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                logger.warning("Reindex failed for exchange %d: %s", row["id"], e)
+                failed += 1
+
+        return {
+            "status": "complete",
+            "total_exchanges": len(rows),
+            "embedded": embedded,
+            "failed": failed,
+        }
 
     async def close(self) -> None:
         """Close LanceDB connection."""

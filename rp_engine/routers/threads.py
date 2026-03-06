@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -11,6 +10,7 @@ from rp_engine.dependencies import get_thread_tracker
 from rp_engine.models.analysis import (
     ThreadCounterUpdate,
     ThreadDetail,
+    ThreadEvidence,
     ThreadListResponse,
 )
 from rp_engine.models.context import ThreadAlert
@@ -56,6 +56,18 @@ async def get_thread(
     return thread
 
 
+@router.get("/{thread_id}/evidence", response_model=list[ThreadEvidence])
+async def get_thread_evidence(
+    thread_id: str,
+    rp_folder: str = Query(...),
+    branch: str = Query("main"),
+    limit: int = Query(20, le=100),
+    tracker: ThreadTracker = Depends(get_thread_tracker),
+):
+    """Get the evidence trail for a thread's counter changes."""
+    return await tracker.get_thread_evidence(thread_id, rp_folder, branch, limit)
+
+
 @router.post("/{thread_id}/update-counter", response_model=ThreadDetail)
 async def update_counter(
     thread_id: str,
@@ -69,19 +81,6 @@ async def update_counter(
     if not thread:
         raise HTTPException(404, detail=f"Thread '{thread_id}' not found")
 
-    from datetime import datetime
-
-    from rp_engine.database import PRIORITY_ANALYSIS
-
-    now = datetime.now(UTC).isoformat()
-    await tracker.db.enqueue_write(
-        """INSERT INTO thread_counters (thread_id, rp_folder, branch, current_counter, updated_at)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(thread_id, rp_folder, branch)
-           DO UPDATE SET current_counter = excluded.current_counter,
-                         updated_at = excluded.updated_at""",
-        [thread_id, rp_folder, branch, body.counter, now],
-        priority=PRIORITY_ANALYSIS,
-    )
+    await tracker.set_counter(thread_id, body.counter, rp_folder, branch)
 
     return await tracker.get_thread(thread_id, rp_folder, branch)

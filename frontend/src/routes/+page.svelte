@@ -5,6 +5,16 @@
 	import { addToast } from '$lib/stores/ui';
 	import { createRP, listRPs } from '$lib/api/rp';
 	import StatusBadge from '$lib/components/ui/StatusBadge.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import InputField from '$lib/components/ui/InputField.svelte';
+	import Btn from '$lib/components/ui/Btn.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Divider from '$lib/components/ui/Divider.svelte';
+	import SectionLabel from '$lib/components/ui/SectionLabel.svelte';
+	import SelectField from '$lib/components/ui/SelectField.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import FormField from '$lib/components/ui/FormField.svelte';
 	import type { RPCreate, RPResponse } from '$lib/types';
 
 	let rpName = '';
@@ -51,137 +61,93 @@
 	}
 </script>
 
-<div class="max-w-4xl mx-auto space-y-8">
-	<div class="flex items-center justify-between">
-		<h1 class="text-2xl font-bold text-text">RP Engine</h1>
-		<StatusBadge />
-	</div>
+<div class="max-w-[720px] mx-auto space-y-6">
+	<PageHeader title="RP Engine">
+		{#snippet actions()}<StatusBadge />{/snippet}
+	</PageHeader>
+
+	<p class="text-text-dim text-[13px] font-serif italic text-center">Every story needs a world to live in.</p>
+
+	<Divider />
 
 	<!-- RP List -->
 	<section class="space-y-4">
-		<h2 class="text-lg font-semibold text-text">Your RPs</h2>
+		<SectionLabel>Your RPs</SectionLabel>
 
 		{#if $serverHealth.status === 'offline'}
-			<div class="bg-error/10 border border-error/30 rounded-lg p-4 text-error text-sm">
-				Could not connect to RP Engine API
-			</div>
+			<EmptyState message="Could not connect to RP Engine API" variant="error" />
 		{:else if $rpList.length === 0}
-			<div class="bg-surface border border-border-custom rounded-lg p-8 text-center text-text-dim">
-				No RPs found. Create one below!
-			</div>
+			<EmptyState message="No RPs found. Create one below!" />
 		{:else}
 			<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 				{#each $rpList as rp}
-					<button
-						class="bg-surface border border-border-custom rounded-lg p-4 text-left hover:border-accent/50 transition-colors group"
-						on:click={() => selectRP(rp)}
-					>
-						<div class="flex items-start justify-between mb-2">
-							<h3 class="font-semibold text-text group-hover:text-accent transition-colors">
-								{rp.rp_folder}
-							</h3>
-							<span class="text-xs text-text-dim bg-surface2 px-2 py-0.5 rounded-full">
-								{rp.card_count} cards
-							</span>
+					<Card hover onclick={() => selectRP(rp)}>
+						<div class="p-4 text-left group">
+							<div class="flex items-start justify-between mb-2">
+								<h3 class="font-semibold text-text group-hover:text-accent transition-colors">
+									{rp.rp_folder}
+								</h3>
+								<Badge>{rp.card_count} cards</Badge>
+							</div>
+							<div class="flex items-center gap-2 flex-wrap">
+								{#if rp.has_guidelines}
+									<Badge color="var(--color-success)" bg="var(--color-success-soft)">Guidelines</Badge>
+								{/if}
+								{#each rp.branches as branch}
+									<Badge>{branch}</Badge>
+								{/each}
+							</div>
 						</div>
-						<div class="flex items-center gap-2 flex-wrap">
-							{#if rp.has_guidelines}
-								<span class="text-xs text-success bg-success/10 px-2 py-0.5 rounded-full">
-									Guidelines
-								</span>
-							{/if}
-							{#each rp.branches as branch}
-								<span class="text-xs text-text-dim bg-surface2 px-2 py-0.5 rounded-full">
-									{branch}
-								</span>
-							{/each}
-						</div>
-					</button>
+					</Card>
 				{/each}
 			</div>
 		{/if}
 	</section>
 
+	<Divider />
+
 	<!-- Create RP Form -->
-	<section class="bg-surface border border-border-custom rounded-lg p-6 space-y-4">
-		<h2 class="text-lg font-semibold text-text">Create New RP</h2>
+	<Card>
+		<div class="p-6 space-y-4">
+		<h2 class="text-lg font-semibold text-text font-serif">Create New RP</h2>
 
 		<div class="space-y-4">
-			<div>
-				<label class="block text-sm font-medium text-text-dim mb-1" for="rp-name">RP Name</label>
-				<input
-					id="rp-name"
-					type="text"
-					bind:value={rpName}
-					placeholder="e.g. My Fantasy RP"
-					class="w-full bg-surface2 border border-border-custom rounded-md px-3 py-2 text-sm text-text placeholder:text-text-dim/50 focus:outline-none focus:ring-1 focus:ring-accent"
-				/>
-			</div>
+			<FormField label="RP Name" id="rp-name">
+				<InputField id="rp-name" bind:value={rpName} placeholder="e.g. My Fantasy RP" />
+			</FormField>
 
 			<div class="grid grid-cols-2 gap-4">
-				<div>
-					<label class="block text-sm font-medium text-text-dim mb-1" for="pov-mode">POV Mode</label>
-					<select
-						id="pov-mode"
-						bind:value={povMode}
-						class="w-full bg-surface2 border border-border-custom rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:ring-1 focus:ring-accent"
-					>
-						<option value="single">Single</option>
-						<option value="dual">Dual</option>
-					</select>
-				</div>
-				<div>
-					<label class="block text-sm font-medium text-text-dim mb-1" for="scene-pacing">Scene Pacing</label>
-					<select
-						id="scene-pacing"
-						bind:value={scenePacing}
-						class="w-full bg-surface2 border border-border-custom rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:ring-1 focus:ring-accent"
-					>
-						<option value="slow">Slow</option>
-						<option value="moderate">Moderate</option>
-						<option value="fast">Fast</option>
-					</select>
-				</div>
+				<FormField label="POV Mode" id="pov-mode">
+					<SelectField id="pov-mode" bind:value={povMode}
+						options={[{value: 'single', label: 'Single'}, {value: 'dual', label: 'Dual'}]} />
+				</FormField>
+				<FormField label="Scene Pacing" id="scene-pacing">
+					<SelectField id="scene-pacing" bind:value={scenePacing}
+						options={[{value: 'slow', label: 'Slow'}, {value: 'moderate', label: 'Moderate'}, {value: 'fast', label: 'Fast'}]} />
+				</FormField>
 			</div>
 
-			<div>
-				<label class="block text-sm font-medium text-text-dim mb-1" for="tone">Tone</label>
-				<input
-					id="tone"
-					type="text"
-					bind:value={tone}
-					placeholder="e.g. dark, gritty, romantic"
-					class="w-full bg-surface2 border border-border-custom rounded-md px-3 py-2 text-sm text-text placeholder:text-text-dim/50 focus:outline-none focus:ring-1 focus:ring-accent"
-				/>
-			</div>
+			<FormField label="Tone" id="tone">
+				<InputField id="tone" bind:value={tone} placeholder="e.g. dark, gritty, romantic" />
+			</FormField>
 
 			{#if povMode === 'dual'}
-				<div>
-					<label class="block text-sm font-medium text-text-dim mb-1" for="dual-chars">Dual Characters</label>
-					<input
-						id="dual-chars"
-						type="text"
-						bind:value={dualCharacters}
-						placeholder="Character1, Character2"
-						class="w-full bg-surface2 border border-border-custom rounded-md px-3 py-2 text-sm text-text placeholder:text-text-dim/50 focus:outline-none focus:ring-1 focus:ring-accent"
-					/>
-				</div>
+				<FormField label="Dual Characters" id="dual-chars">
+					<InputField id="dual-chars" bind:value={dualCharacters} placeholder="Character1, Character2" />
+				</FormField>
 			{/if}
 
-			<button
-				class="w-full bg-accent hover:bg-accent-hover text-white font-medium py-2 px-4 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-				on:click={handleCreate}
-				disabled={creating || !rpName.trim()}
-			>
+			<Btn primary onclick={handleCreate} disabled={creating || !rpName.trim()}>
 				{creating ? 'Creating...' : 'Create RP'}
-			</button>
+			</Btn>
 		</div>
 
 		{#if createdFiles.length > 0}
-			<div class="bg-surface2 rounded-md p-3">
+			<div class="bg-bg-subtle rounded-md p-3">
 				<p class="text-xs text-text-dim mb-1">Created files:</p>
 				<pre class="text-xs text-success font-mono">{createdFiles.join('\n')}</pre>
 			</div>
 		{/if}
-	</section>
+	</div>
+	</Card>
 </div>

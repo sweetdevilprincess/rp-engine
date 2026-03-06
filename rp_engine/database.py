@@ -29,7 +29,6 @@ class WriteItem:
     timestamp: float = field(default_factory=time.monotonic)
     sql: str = field(compare=False, default="")
     params: list[Any] = field(compare=False, default_factory=list)
-    many: bool = field(compare=False, default=False)
     result_future: asyncio.Future | None = field(compare=False, default=None)
     retry_count: int = field(compare=False, default=0)
     max_retries: int = field(compare=False, default=3)
@@ -72,7 +71,6 @@ class WriteQueue:
         sql: str,
         params: list[Any] | None = None,
         priority: int = PRIORITY_ANALYSIS,
-        many: bool = False,
     ) -> asyncio.Future:
         """Enqueue a write operation. Returns a Future with the result."""
         loop = asyncio.get_running_loop()
@@ -81,7 +79,6 @@ class WriteQueue:
             priority=priority,
             sql=sql,
             params=params or [],
-            many=many,
             result_future=future,
         )
         await self._queue.put(item)
@@ -121,12 +118,8 @@ class WriteQueue:
         """Execute a single write operation."""
         conn = self.db._write_connection
         try:
-            lastrowid = None
-            if item.many:
-                await conn.executemany(item.sql, item.params)
-            else:
-                cursor = await conn.execute(item.sql, item.params)
-                lastrowid = cursor.lastrowid
+            cursor = await conn.execute(item.sql, item.params)
+            lastrowid = cursor.lastrowid
             await conn.commit()
             if item.result_future and not item.result_future.done():
                 item.result_future.set_result(lastrowid)
