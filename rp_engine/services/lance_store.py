@@ -18,6 +18,11 @@ import pyarrow as pa
 
 logger = logging.getLogger(__name__)
 
+
+def _lance_escape(val: str) -> str:
+    """Escape quotes in values interpolated into LanceDB .where() filters."""
+    return val.replace("\\", "\\\\").replace('"', '\\"')
+
 # Schema for exchange vectors
 EXCHANGE_SCHEMA = pa.schema([
     ("text", pa.string()),
@@ -68,10 +73,11 @@ class LanceStore:
 
     async def initialize(self) -> None:
         """Open or create the LanceDB database and tables."""
+        import asyncio
         import lancedb
 
         self.db_path.mkdir(parents=True, exist_ok=True)
-        self._db = lancedb.connect(str(self.db_path))
+        self._db = await asyncio.to_thread(lancedb.connect, str(self.db_path))
 
         # Open or create tables (try open first, create if missing)
         try:
@@ -170,7 +176,7 @@ class LanceStore:
 
         # Remove existing vectors for this card
         try:
-            await asyncio.to_thread(self._card_table.delete, f'card_id = "{card_id}"')
+            await asyncio.to_thread(self._card_table.delete, f'card_id = "{_lance_escape(card_id)}"')
         except Exception:
             pass  # Table may be empty
 
@@ -221,9 +227,12 @@ class LanceStore:
 
         try:
             def _search():
+                where = f'rp_folder = "{_lance_escape(rp_folder)}" AND branch = "{_lance_escape(branch)}"'
+                if max_exchange is not None:
+                    where += f" AND exchange_number <= {int(max_exchange)}"
                 return (
                     self._exchange_table.search(query_vec)
-                    .where(f'rp_folder = "{rp_folder}" AND branch = "{branch}"')
+                    .where(where)
                     .limit(limit)
                     .to_list()
                 )
@@ -235,8 +244,6 @@ class LanceStore:
 
         search_results = []
         for row in results:
-            if max_exchange and row.get("exchange_number", 0) > max_exchange:
-                continue
             search_results.append(LanceSearchResult(
                 text=row["text"],
                 score=1.0 - row.get("_distance", 0),  # Lance returns distance
@@ -271,7 +278,7 @@ class LanceStore:
             def _search():
                 return (
                     self._card_table.search(query_vec)
-                    .where(f'rp_folder = "{rp_folder}"')
+                    .where(f'rp_folder = "{_lance_escape(rp_folder)}"')
                     .limit(limit)
                     .to_list()
                 )
@@ -307,7 +314,7 @@ class LanceStore:
         try:
             await asyncio.to_thread(
                 self._exchange_table.delete,
-                f'rp_folder = "{rp_folder}" AND branch = "{branch}" '
+                f'rp_folder = "{_lance_escape(rp_folder)}" AND branch = "{_lance_escape(branch)}" '
                 f"AND exchange_number > {after_exchange}",
             )
         except Exception as e:
@@ -325,22 +332,23 @@ class LanceStore:
 
         try:
             def _fetch():
-                table = self._exchange_table.to_arrow()
-                return table.to_pylist()
+                # Build filter to push down to LanceDB instead of loading entire table
+                filters = []
+                if rp_folder:
+                    filters.append(f'rp_folder = "{_lance_escape(rp_folder)}"')
+                if branch:
+                    filters.append(f'branch = "{_lance_escape(branch)}"')
+
+                query = self._exchange_table.search().select(
+                    ["exchange_number", "chunk_index", "text", "rp_folder", "branch", "session_id"]
+                )
+                if filters:
+                    query = query.where(" AND ".join(filters))
+                query = query.limit(limit)
+                return query.to_list()
 
             rows = await asyncio.to_thread(_fetch)
-
-            # Filter in Python
-            if rp_folder:
-                rows = [r for r in rows if r.get("rp_folder") == rp_folder]
-            if branch:
-                rows = [r for r in rows if r.get("branch") == branch]
-
-            # Strip vector data for response size
-            for r in rows:
-                r.pop("vector", None)
-
-            return rows[:limit]
+            return rows
         except Exception as e:
             logger.warning("Failed to list exchange chunks: %s", e)
             return []
@@ -360,7 +368,7 @@ class LanceStore:
             if rp_folder:
                 await asyncio.to_thread(
                     self._exchange_table.delete,
-                    f'rp_folder = "{rp_folder}" AND branch = "{branch}"',
+                    f'rp_folder = "{_lance_escape(rp_folder)}" AND branch = "{_lance_escape(branch)}"',
                 )
             else:
                 await asyncio.to_thread(

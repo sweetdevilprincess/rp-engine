@@ -299,7 +299,7 @@
 											<div class="flex items-center gap-2 flex-wrap">
 												<span class="text-sm font-medium text-text">{thread.name}</span>
 												{#if thread.priority}
-													<span class="text-xs px-1.5 py-0.5 rounded {priorityStyle(thread.priority)}">{thread.priority.replace('_', ' ')}</span>
+													<span class="text-xs px-1.5 py-0.5 rounded {priorityStyle(thread.priority)}">{thread.priority.replaceAll('_', ' ')}</span>
 												{/if}
 												{#if thread.thread_type}
 													<span class="text-xs bg-bg-subtle text-text-dim px-1.5 py-0.5 rounded">{thread.thread_type}</span>
@@ -372,7 +372,7 @@
 								<div class="bg-surface rounded-[10px] border border-border-custom px-4 py-2.5 flex items-center gap-3">
 									<span class="text-sm text-text-dim">{thread.name}</span>
 									{#if thread.priority}
-										<span class="text-xs px-1.5 py-0.5 rounded {priorityStyle(thread.priority)}">{thread.priority.replace('_', ' ')}</span>
+										<span class="text-xs px-1.5 py-0.5 rounded {priorityStyle(thread.priority)}">{thread.priority.replaceAll('_', ' ')}</span>
 									{/if}
 									<span class="text-xs text-text-dim ml-auto font-mono">#{thread.current_counter}</span>
 								</div>

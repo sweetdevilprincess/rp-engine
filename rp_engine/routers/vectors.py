@@ -175,12 +175,14 @@ async def get_vector_stats(
     total_files = agg["total_files"] if agg else 0
     avg_size = total_chars / total if total > 0 else 0.0
 
-    # Embedding check still needs BLOB data, but only embedding column
-    embed_rows = await db.fetch_all(
-        f"SELECT embedding FROM vectors {cond}",
+    # Count real embeddings via SQL — avoids loading all BLOBs into memory
+    embed_agg = await db.fetch_one(
+        f"""SELECT COUNT(*) as cnt FROM vectors
+            {cond + ' AND' if cond else 'WHERE'} embedding IS NOT NULL
+            AND embedding != ZEROBLOB(LENGTH(embedding))""",
         params,
     )
-    with_embed = sum(1 for r in embed_rows if not _is_zero_vector(r["embedding"]))
+    with_embed = embed_agg["cnt"] if embed_agg else 0
 
     # Cards without vectors — use LEFT JOIN
     card_cond = "AND sc.rp_folder = ?" if rp_folder else ""

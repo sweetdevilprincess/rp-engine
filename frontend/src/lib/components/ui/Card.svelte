@@ -18,16 +18,31 @@
 	let { hover = false, padding = '', children, ...restProps }: Props = $props();
 </script>
 
+{#if restProps.onclick || hover}
 <div
-	class="card"
-	class:card-hover={hover}
+	class="card card-hover"
 	style={padding ? `padding: ${padding};` : ''}
-	role={restProps.onclick || hover ? 'button' : undefined}
-	tabindex={restProps.onclick || hover ? 0 : undefined}
+	role="button"
+	tabindex="0"
+	onkeydown={(e: KeyboardEvent) => {
+		if ((e.key === 'Enter' || e.key === ' ') && restProps.onclick) {
+			e.preventDefault();
+			(restProps.onclick as (e: Event) => void)(e);
+		}
+	}}
 	{...restProps}
 >
 	{@render children?.()}
 </div>
+{:else}
+<div
+	class="card"
+	style={padding ? `padding: ${padding};` : ''}
+	{...restProps}
+>
+	{@render children?.()}
+</div>
+{/if}
 
 <style>
 	.card {

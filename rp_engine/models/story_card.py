@@ -60,6 +60,7 @@ class ReindexResponse(BaseModel):
     connections: int
     aliases: int
     keywords: int
+    chunks: int = 0
     duration_ms: float
 
 
@@ -67,6 +68,7 @@ class SuggestCardRequest(BaseModel):
     entity_name: str
     card_type: str = "character"
     rp_folder: str
+    branch: str = "main"
     additional_context: str = ""
 
 

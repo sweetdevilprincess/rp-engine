@@ -217,14 +217,16 @@ async def suggest_card(
     rp_folder = body.rp_folder
     additional_context = body.additional_context
 
+    branch = body.branch
+
     # Try scene-aware evidence first (from card_gap_exchanges)
     gap_rows = await db.fetch_all(
         """SELECT exchange_number, chunk_text, mention_type
            FROM card_gap_exchanges
            WHERE LOWER(entity_name) = LOWER(?) AND rp_folder = ?
-             AND branch = 'main'
+             AND branch = ?
            ORDER BY exchange_number""",
-        [entity_name, rp_folder],
+        [entity_name, rp_folder, branch],
     )
 
     if gap_rows:

@@ -26,6 +26,7 @@ class ConfigResponse(BaseModel):
     server: dict
     paths: dict
     llm: dict
+    chat: dict
     context: dict
     search: dict
     trust: dict
@@ -47,6 +48,7 @@ class ConfigUpdate(BaseModel):
     llm: dict | None = None
     context: dict | None = None
     search: dict | None = None
+    chat: dict | None = None
     trust: dict | None = None
     rp: dict | None = None
     # Secret fields — written to .env only, never to config.yaml
@@ -62,6 +64,7 @@ def _config_to_dict(cfg: RPEngineConfig) -> dict:
             **cfg.llm.model_dump(exclude={"api_key"}),
             "api_key": "***" if cfg.effective_api_key() else "",
         },
+        "chat": cfg.chat.model_dump(),
         "context": cfg.context.model_dump(),
         "search": cfg.search.model_dump(),
         "trust": cfg.trust.model_dump(),
@@ -130,6 +133,7 @@ async def update_config(body: ConfigUpdate):
             "server": body.server,
             "paths": body.paths,
             "llm": body.llm,
+            "chat": body.chat,
             "context": body.context,
             "search": body.search,
             "trust": body.trust,

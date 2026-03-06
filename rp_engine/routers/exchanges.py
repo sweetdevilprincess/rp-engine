@@ -29,6 +29,9 @@ from rp_engine.services.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 
+# Track background tasks to prevent GC mid-execution
+_bg_tasks: set[asyncio.Task] = set()
+
 router = APIRouter(prefix="/api/exchanges", tags=["exchanges"])
 
 
@@ -173,11 +176,7 @@ async def save_exchange(
             )
             rewound_count = to_delete_count or 0
     else:
-        latest = await db.fetch_val(
-            "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder=? AND branch=?",
-            [rp_folder, branch],
-        )
-        exchange_number = (latest or 0) + 1
+        exchange_number = None  # Will be assigned atomically below
 
     # 5. Insert
     now = datetime.now(UTC).isoformat()
@@ -185,21 +184,49 @@ async def save_exchange(
     if body.idempotency_key:
         metadata["idempotency_key"] = body.idempotency_key
 
-    future = await db.enqueue_write(
-        """INSERT INTO exchanges (session_id, rp_folder, branch, exchange_number,
-           user_message, assistant_response, in_story_timestamp, location,
-           analysis_status, created_at, metadata, idempotency_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
-        [
-            session_id, rp_folder, branch, exchange_number,
-            body.user_message, body.assistant_response,
-            body.in_story_timestamp, body.location,
-            now, json.dumps(metadata) if metadata else None,
-            body.idempotency_key,
-        ],
-        priority=PRIORITY_EXCHANGE,
-    )
+    if exchange_number is not None:
+        # Branch rewind case — exchange_number already determined
+        future = await db.enqueue_write(
+            """INSERT INTO exchanges (session_id, rp_folder, branch, exchange_number,
+               user_message, assistant_response, in_story_timestamp, location,
+               analysis_status, created_at, metadata, idempotency_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
+            [
+                session_id, rp_folder, branch, exchange_number,
+                body.user_message, body.assistant_response,
+                body.in_story_timestamp, body.location,
+                now, json.dumps(metadata) if metadata else None,
+                body.idempotency_key,
+            ],
+            priority=PRIORITY_EXCHANGE,
+        )
+    else:
+        # Atomic exchange number assignment — avoids race conditions
+        future = await db.enqueue_write(
+            """INSERT INTO exchanges (session_id, rp_folder, branch, exchange_number,
+               user_message, assistant_response, in_story_timestamp, location,
+               analysis_status, created_at, metadata, idempotency_key)
+               VALUES (?, ?, ?, COALESCE(
+                   (SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?), 0
+               ) + 1, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
+            [
+                session_id, rp_folder, branch,
+                rp_folder, branch,
+                body.user_message, body.assistant_response,
+                body.in_story_timestamp, body.location,
+                now, json.dumps(metadata) if metadata else None,
+                body.idempotency_key,
+            ],
+            priority=PRIORITY_EXCHANGE,
+        )
     exchange_id = await future
+
+    # Retrieve the actual exchange number (needed for atomic insert case)
+    if exchange_number is None:
+        exchange_number = await db.fetch_val(
+            "SELECT exchange_number FROM exchanges WHERE id = ?",
+            [exchange_id],
+        )
 
     # Background vector embedding (non-blocking, independent of LLM analysis)
     if lance_store is not None:
@@ -215,7 +242,9 @@ async def save_exchange(
                 )
             except Exception as e:
                 logger.warning("Background exchange embedding failed: %s", e)
-        asyncio.create_task(_embed())
+        task = asyncio.create_task(_embed())
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
 
     # Enqueue for async analysis pipeline (Phase 5)
     if pipeline is not None:

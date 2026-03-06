@@ -95,12 +95,23 @@ class RecapBuilder:
         )
 
         # Generate via LLM
-        response = await self.llm_client.generate(
-            messages=[{"role": "user", "content": prompt}],
-            model=self.llm_client.models.card_generation,
-            temperature=0.5,
-            max_tokens=word_limit * 3,
-        )
+        try:
+            response = await self.llm_client.generate(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.llm_client.models.card_generation,
+                temperature=0.5,
+                max_tokens=word_limit * 3,
+            )
+        except Exception as e:
+            logger.warning("Recap LLM call failed: %s", e)
+            return Recap(
+                rp_folder=rp_folder,
+                branch=branch,
+                session_id=session_id,
+                style=style,
+                recap_text="[Recap generation failed — LLM unavailable]",
+                generated_at=datetime.now(UTC).isoformat(),
+            )
 
         now = datetime.now(UTC).isoformat()
         recap = Recap(
@@ -149,7 +160,7 @@ class RecapBuilder:
                WHERE ex.rp_folder = ? AND ex.branch = ?""",
             [rp_folder, branch],
         )
-        raw = f"{latest_exchange}:{latest_trust}"
+        raw = f"{rp_folder}:{branch}:{latest_exchange}:{latest_trust}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     async def _get_cached_recap(
@@ -236,12 +247,11 @@ class RecapBuilder:
     async def _get_recent_trust_summary(self, rp_folder: str, branch: str) -> str:
         """Recent trust changes across last 2 sessions."""
         rows = await self.db.fetch_all(
-            """SELECT r.character_b, SUM(tm.change) as total, tm.reason
+            """SELECT tm.character_b, SUM(tm.change) as total, tm.reason
                FROM trust_modifications tm
-               JOIN relationships r ON tm.relationship_id = r.id
                JOIN exchanges ex ON tm.exchange_id = ex.id
                WHERE ex.rp_folder = ? AND ex.branch = ?
-               GROUP BY r.character_b
+               GROUP BY tm.character_b
                ORDER BY ABS(SUM(tm.change)) DESC
                LIMIT 5""",
             [rp_folder, branch],

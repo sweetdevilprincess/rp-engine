@@ -8,19 +8,17 @@
 		{ id: 'chunks',  label: 'Chunk Viewer' },
 	];
 
-	let activeTool = 'context';
+	let activeTool = $state('context');
 </script>
 
 <div class="flex gap-3">
 	<SideNav title="Dev Tools" items={tools} bind:active={activeTool} />
 
-	<!-- Tool content — both panels side by side -->
-	<div class="flex-1 min-w-0 flex flex-col lg:flex-row gap-3">
-		<div class="flex-1 min-w-0 rounded-lg {activeTool === 'context' ? 'ring-1 ring-accent/30' : ''}">
+	<div class="flex-1 min-w-0">
+		{#if activeTool === 'context'}
 			<ContextInspector />
-		</div>
-		<div class="flex-1 min-w-0 rounded-lg {activeTool === 'chunks' ? 'ring-1 ring-accent/30' : ''}">
+		{:else if activeTool === 'chunks'}
 			<ChunkViewer />
-		</div>
+		{/if}
 	</div>
 </div>

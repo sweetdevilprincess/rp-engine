@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
+	import yaml from 'js-yaml';
 	import { listCards, getCard, createCard, updateCard } from '$lib/api/cards';
 	import { getFullState } from '$lib/api/state';
 	import { addToast } from '$lib/stores/ui';
@@ -192,57 +193,19 @@
 		return lines.join('\n');
 	}
 
-	function parseYaml(yaml: string): Record<string, unknown> {
-		const fm: Record<string, unknown> = {};
-		let currentKey = '';
-		let currentArray: string[] | null = null;
+	/** Strip YAML frontmatter (---...---) from raw card content, returning just the body. */
+	function stripFrontmatter(raw: string): string {
+		const match = raw.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+		return match ? raw.slice(match[0].length).trim() : raw.trim();
+	}
 
-		for (const line of yaml.split('\n')) {
-			const trimmed = line.trim();
-			if (!trimmed) continue;
-
-			if (trimmed.startsWith('- ') && currentKey) {
-				if (!currentArray) currentArray = [];
-				currentArray.push(trimmed.slice(2).trim());
-				continue;
-			}
-
-			if (currentArray && currentKey) {
-				fm[currentKey] = currentArray;
-				currentArray = null;
-			}
-
-			const colonIdx = trimmed.indexOf(':');
-			if (colonIdx === -1) continue;
-
-			const key = trimmed.slice(0, colonIdx).trim();
-			const val = trimmed.slice(colonIdx + 1).trim();
-			currentKey = key;
-
-			if (val === '' || val === '[]') {
-				if (val === '[]') fm[key] = [];
-				continue;
-			}
-
-			if (val.startsWith('{') || val.startsWith('[')) {
-				try { fm[key] = JSON.parse(val); continue; } catch {}
-			}
-
-			if (val === 'true') { fm[key] = true; continue; }
-			if (val === 'false') { fm[key] = false; continue; }
-			if (val === 'null') { fm[key] = null; continue; }
-
-			const num = Number(val);
-			if (!isNaN(num) && val !== '') { fm[key] = num; continue; }
-
-			fm[key] = val;
+	function parseYaml(text: string): Record<string, unknown> {
+		try {
+			const result = yaml.load(text);
+			return (result && typeof result === 'object') ? result as Record<string, unknown> : {};
+		} catch {
+			return {};
 		}
-
-		if (currentArray && currentKey) {
-			fm[currentKey] = currentArray;
-		}
-
-		return fm;
 	}
 </script>
 
@@ -272,7 +235,7 @@
 					>
 						<div>
 							<div class="text-[13px] font-medium text-text">{card.name}</div>
-							<div class="text-[11px] text-text-dim/60">{card.card_type.replace('_', ' ')}</div>
+							<div class="text-[11px] text-text-dim/60">{card.card_type.replaceAll('_', ' ')}</div>
 						</div>
 					</ListItem>
 				{/each}
@@ -297,7 +260,7 @@
 				<div class="space-y-2">
 					<FormField label="Card Type" size="xs">
 						<SelectField bind:value={createType}
-							options={CARD_TYPES.map(ct => ({value: ct, label: ct.replace('_', ' ')}))} />
+							options={CARD_TYPES.map(ct => ({value: ct, label: ct.replaceAll('_', ' ')}))} />
 					</FormField>
 					<FormField label="Name" size="xs">
 						<InputField bind:value={createName} placeholder="Card name..." size="sm" onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && startCreateEditor()} />
@@ -329,7 +292,7 @@
 					<div class="mb-3">
 						<PageHeader title={card.name} size="md">
 							{#snippet before()}
-								<Badge color={cardTypeColors(card.card_type).text} bg={cardTypeColors(card.card_type).bg}>{card.card_type.replace('_', ' ')}</Badge>
+								<Badge color={cardTypeColors(card.card_type).text} bg={cardTypeColors(card.card_type).bg}>{card.card_type.replaceAll('_', ' ')}</Badge>
 							{/snippet}
 							{#snippet badges()}
 								{#if card.importance}
@@ -343,9 +306,9 @@
 						</PageHeader>
 					</div>
 
-					<!-- Summary / Content -->
-					{#if selectedCard.content}
-						<p class="text-[13px] text-text-dim leading-relaxed mb-4">{selectedCard.content}</p>
+					<!-- Summary / Content (body only, frontmatter stripped) -->
+					{#if stripFrontmatter(selectedCard.content)}
+						<p class="text-[13px] text-text-dim leading-relaxed mb-4 whitespace-pre-wrap">{stripFrontmatter(selectedCard.content)}</p>
 					{/if}
 
 					<!-- Frontmatter fields -->
@@ -401,10 +364,10 @@
 				<div class="flex justify-between items-center p-5 px-[22px] pb-4">
 					<div class="flex items-center gap-2">
 						{#if mode === 'edit' && selectedCard}
-							<Badge color={cardTypeColors(selectedCard.card_type).text} bg={cardTypeColors(selectedCard.card_type).bg}>{selectedCard.card_type.replace('_', ' ')}</Badge>
+							<Badge color={cardTypeColors(selectedCard.card_type).text} bg={cardTypeColors(selectedCard.card_type).bg}>{selectedCard.card_type.replaceAll('_', ' ')}</Badge>
 							<h2 class="font-serif text-lg font-semibold m-0">{selectedCard.name}</h2>
 						{:else}
-							<h2 class="text-sm font-medium text-text m-0">Creating {createType.replace('_', ' ')}: {createName}</h2>
+							<h2 class="text-sm font-medium text-text m-0">Creating {createType.replaceAll('_', ' ')}: {createName}</h2>
 						{/if}
 					</div>
 					<div class="flex gap-1.5">

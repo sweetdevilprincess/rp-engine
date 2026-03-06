@@ -41,12 +41,17 @@ class GuidelinesService:
             if frontmatter:
                 resp = GuidelinesResponse(
                     pov_mode=frontmatter.get("pov_mode"),
+                    pov_character=frontmatter.get("pov_character"),
                     dual_characters=frontmatter.get("dual_characters", []),
                     narrative_voice=frontmatter.get("narrative_voice"),
                     tense=frontmatter.get("tense"),
                     tone=frontmatter.get("tone"),
                     scene_pacing=frontmatter.get("scene_pacing"),
                     integrate_user_narrative=frontmatter.get("integrate_user_narrative"),
+                    preserve_user_details=frontmatter.get("preserve_user_details"),
+                    sensitive_themes=frontmatter.get("sensitive_themes", []),
+                    hard_limits=frontmatter.get("hard_limits"),
+                    response_length=frontmatter.get("response_length"),
                 )
                 _cache[rp_folder] = (mtime, resp)
                 return resp

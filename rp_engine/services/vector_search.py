@@ -147,7 +147,7 @@ class VectorSearch:
                 embedding_blob = _vec_to_blob(embeddings[i])
             else:
                 # Store zero vector as placeholder
-                embedding_blob = _vec_to_blob([0.0] * 384)
+                embedding_blob = _vec_to_blob([0.0] * self.config.embedding_dimension)
 
             future = await self.db.enqueue_write(
                 """INSERT INTO vectors (content, embedding, file_path, chunk_index,

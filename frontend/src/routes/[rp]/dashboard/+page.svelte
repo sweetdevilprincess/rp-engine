@@ -3,12 +3,12 @@
 	import { page } from '$app/stores';
 	import { listCards, getCard, reindex, auditCards, getConnections } from '$lib/api/cards';
 	import { getFullState } from '$lib/api/state';
-	import { listNPCs, getTrustInfo } from '$lib/api/npc';
+	import { listNPCs } from '$lib/api/npc';
 	import { addToast } from '$lib/stores/ui';
 	import { CARD_TYPES } from '$lib/types/enums';
 	import type { StoryCardSummary, StoryCardDetail, CardListResponse, AuditResponse, AuditGap, GraphData, GraphNode, GraphEdge } from '$lib/types';
 	import type { StateSnapshot, CharacterDetail, RelationshipDetail, EventDetail } from '$lib/types';
-	import type { NPCListItem, TrustInfo } from '$lib/types';
+	import type { NPCListItem } from '$lib/types';
 	import ForceGraph from '$lib/components/ForceGraph.svelte';
 	import { cardTypeColor, importanceColor, trustStageColor, significanceColor, cardTypeHex, GRAPH_FILTER_TYPES } from '$lib/utils/colors';
 	import { cardTypeColors, importanceColors, trustStageColors, significanceColors } from '$lib/utils/colors';
@@ -21,17 +21,19 @@
 	import InfoRow from '$lib/components/ui/InfoRow.svelte';
 	import EntityChip from '$lib/components/ui/EntityChip.svelte';
 	import CardSection from '$lib/components/ui/CardSection.svelte';
-	import TrustBar from '$lib/components/ui/TrustBar.svelte';
+	import NPCTrustList from '$lib/components/ui/NPCTrustList.svelte';
 	import BackButton from '$lib/components/ui/BackButton.svelte';
-	import { barStyle, formatDate } from '$lib/utils/format';
+	import RPSettings from '$lib/components/RPSettings.svelte';
+	import { barStyle } from '$lib/utils/format';
 
 	// ── Tool nav ──
-	type ToolId = 'library' | 'state' | 'trust' | 'graph';
+	type ToolId = 'library' | 'state' | 'trust' | 'graph' | 'settings';
 	const tools: { id: ToolId; label: string }[] = [
-		{ id: 'library', label: 'Library' },
-		{ id: 'state',   label: 'State' },
-		{ id: 'trust',   label: 'Trust' },
-		{ id: 'graph',   label: 'Graph' },
+		{ id: 'library',  label: 'Library' },
+		{ id: 'state',    label: 'State' },
+		{ id: 'trust',    label: 'Trust' },
+		{ id: 'graph',    label: 'Graph' },
+		{ id: 'settings', label: 'Settings' },
 	];
 	let activeTool = $state<ToolId>('library');
 	let loadedTools = $state(new Set<string>());
@@ -59,11 +61,6 @@
 	// ── Trust tool ──
 	let npcs = $state<NPCListItem[]>([]);
 	let trustLoading = $state(false);
-	let expandedNpc = $state<string | null>(null);
-	let trustDetails = $state<Record<string, TrustInfo>>({});
-	let loadingTrust = $state<Record<string, boolean>>({});
-	let trustSortBy = $state<'trust_desc' | 'trust_asc' | 'name' | 'importance'>('trust_desc');
-	let trustFilter = $state('');
 
 	// ── Graph tool ──
 	let graphData = $state<GraphData | null>(null);
@@ -104,6 +101,8 @@
 		}
 	}
 
+	let rpFolder = $derived($page.params.rp ?? '');
+
 	// ── Deep-link support ──
 	let pendingExpandNpc = $state<string | null>(null);
 
@@ -122,11 +121,7 @@
 			await loadTool('library');
 		}
 
-		// Auto-expand NPC after trust tool loads
-		if (pendingExpandNpc && toolParam === 'trust') {
-			await toggleExpand(pendingExpandNpc);
-			pendingExpandNpc = null;
-		}
+		// NPCTrustList handles auto-expand via initialExpand prop
 	});
 
 	async function loadStats() {
@@ -242,42 +237,6 @@
 	});
 	let visibleEvents = $derived(showAllEvents ? sortedEvents : sortedEvents.slice(0, 50));
 
-	// ── Trust helpers ──
-	async function toggleExpand(name: string) {
-		if (expandedNpc === name) { expandedNpc = null; return; }
-		expandedNpc = name;
-		if (!trustDetails[name]) {
-			loadingTrust[name] = true;
-			try {
-				trustDetails[name] = await getTrustInfo(name);
-				trustDetails = { ...trustDetails };
-			} catch (e: any) {
-				addToast(e.message ?? `Failed to load trust for ${name}`, 'error');
-			} finally {
-				loadingTrust[name] = false;
-			}
-		}
-	}
-
-
-	let sortedTrustNpcs = $derived(
-		[...npcs]
-			.filter(n =>
-				!trustFilter.trim() ||
-				n.name.toLowerCase().includes(trustFilter.toLowerCase()) ||
-				(n.primary_archetype ?? '').toLowerCase().includes(trustFilter.toLowerCase())
-			)
-			.sort((a, b) => {
-				if (trustSortBy === 'trust_desc') return b.trust_score - a.trust_score;
-				if (trustSortBy === 'trust_asc')  return a.trust_score - b.trust_score;
-				if (trustSortBy === 'name')        return a.name.localeCompare(b.name);
-				if (trustSortBy === 'importance') {
-					const rank = (i: string | null) => i === 'primary' ? 0 : i === 'secondary' ? 1 : 2;
-					return rank(a.importance) - rank(b.importance);
-				}
-				return 0;
-			})
-	);
 
 </script>
 
@@ -317,7 +276,7 @@
 					<div class="p-4 space-y-4">
 						<!-- Header -->
 						<div class="flex items-center gap-2">
-							<Badge color={cardTypeColors(selectedCard.card_type).text} bg={cardTypeColors(selectedCard.card_type).bg} dot={cardTypeColors(selectedCard.card_type).hex}>{selectedCard.card_type.replace('_', ' ')}</Badge>
+							<Badge color={cardTypeColors(selectedCard.card_type).text} bg={cardTypeColors(selectedCard.card_type).bg} dot={cardTypeColors(selectedCard.card_type).hex}>{selectedCard.card_type.replaceAll('_', ' ')}</Badge>
 							<h3 class="text-base font-semibold text-text font-serif">{selectedCard.name}</h3>
 							{#if selectedCard.importance}
 								{@const imp = importanceColors(selectedCard.importance)}
@@ -425,7 +384,7 @@
 										<span class="font-serif text-[13px] font-medium text-text truncate">{card.name}</span>
 									</div>
 									<div class="flex gap-1 flex-wrap mb-1.5">
-										<Badge color={cs.text} bg={cs.bg}>{card.card_type.replace('_', ' ')}</Badge>
+										<Badge color={cs.text} bg={cs.bg}>{card.card_type.replaceAll('_', ' ')}</Badge>
 										{#if card.importance}
 											{@const imp = importanceColors(card.importance)}
 											<Badge color={imp.text} bg={imp.bg}>{card.importance}</Badge>
@@ -555,138 +514,12 @@
 
 		<!-- ═══════════ TRUST ═══════════ -->
 		{:else if activeTool === 'trust'}
-			<div class="space-y-4">
-				<!-- Controls -->
-				<div class="flex items-center gap-3">
-					<div class="flex-1 min-w-0">
-						<InputField bind:value={trustFilter} placeholder="Filter by name or archetype..." />
-					</div>
-					<div class="shrink-0">
-						<SelectField bind:value={trustSortBy} options={[
-							{value: 'trust_desc', label: 'Trust: High → Low'},
-							{value: 'trust_asc', label: 'Trust: Low → High'},
-							{value: 'name', label: 'Name A-Z'},
-							{value: 'importance', label: 'Importance'}
-						]} />
-					</div>
-					<span class="text-sm text-text-dim shrink-0">{sortedTrustNpcs.length} NPC{sortedTrustNpcs.length !== 1 ? 's' : ''}</span>
-				</div>
+			<NPCTrustList {npcs} loading={trustLoading} initialExpand={pendingExpandNpc} />
 
-				<!-- NPC list -->
-				{#if trustLoading}
-					<EmptyState message="Loading NPCs..." variant="loading" />
-				{:else if sortedTrustNpcs.length === 0}
-					<EmptyState message={trustFilter ? 'No NPCs match your filter.' : 'No NPCs found for this RP.'} />
-				{:else}
-					<div class="space-y-2">
-						{#each sortedTrustNpcs as npc}
-							<div class="bg-surface rounded-lg border border-border-custom overflow-hidden">
-								<!-- NPC summary row -->
-								<button
-									class="w-full flex items-center gap-3 px-4 py-3 hover:bg-bg-subtle transition-colors text-left"
-									onclick={() => toggleExpand(npc.name)}
-								>
-									<div class="flex items-center gap-2 w-48 shrink-0 min-w-0">
-										<span class="font-medium text-text truncate">{npc.name}</span>
-									</div>
-									<div class="flex items-center gap-1.5 shrink-0">
-										{#if npc.importance}
-											<span class="text-xs px-1.5 py-0.5 rounded" style="{importanceColor(npc.importance)}">{npc.importance}</span>
-										{/if}
-										{#if npc.primary_archetype}
-											<span class="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-dim">{npc.primary_archetype}</span>
-										{/if}
-									</div>
-									<!-- Trust bar -->
-									<TrustBar score={npc.trust_score} />
-									{#if npc.trust_stage}
-										<span class="text-xs px-2 py-0.5 rounded shrink-0" style="{trustStageColor(npc.trust_stage)}">
-											{npc.trust_stage}
-										</span>
-									{/if}
-									<svg class="w-4 h-4 text-text-dim shrink-0 transition-transform {expandedNpc === npc.name ? 'rotate-180' : ''}"
-										viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
-										<path d="M4 6l4 4 4-4" />
-									</svg>
-								</button>
-
-								<!-- Expanded details -->
-								{#if expandedNpc === npc.name}
-									<div class="border-t border-border-custom">
-										<div class="px-4 py-3 grid grid-cols-2 gap-4 text-sm border-b border-border-custom">
-											<div class="space-y-1.5">
-												{#if npc.emotional_state}
-													<div><span class="text-text-dim text-xs">Emotional state</span><br>
-														<span class="text-text">{npc.emotional_state}</span></div>
-												{/if}
-												{#if npc.location}
-													<div><span class="text-text-dim text-xs">Location</span><br>
-														<span class="text-text">{npc.location}</span></div>
-												{/if}
-												{#if npc.secondary_archetype}
-													<div><span class="text-text-dim text-xs">Secondary archetype</span><br>
-														<span class="text-text">{npc.secondary_archetype}</span></div>
-												{/if}
-											</div>
-											{#if npc.behavioral_modifiers?.length}
-												<div>
-													<span class="text-text-dim text-xs">Behavioral modifiers</span>
-													<div class="flex flex-wrap gap-1 mt-1">
-														{#each npc.behavioral_modifiers as mod}
-															<span class="text-xs bg-bg-subtle text-text-dim px-1.5 py-0.5 rounded">{mod}</span>
-														{/each}
-													</div>
-												</div>
-											{/if}
-										</div>
-
-										{#if loadingTrust[npc.name]}
-											<div class="px-4 py-3 text-xs text-text-dim">Loading trust history...</div>
-										{:else if trustDetails[npc.name]}
-											{@const td = trustDetails[npc.name]}
-											<div class="px-4 py-3 space-y-3">
-												<div class="flex items-center gap-4 text-sm">
-													<span class="text-text-dim text-xs">This session:</span>
-													{#if td.session_gains > 0}
-														<span class="text-success text-xs">+{td.session_gains} gains</span>
-													{/if}
-													{#if td.session_losses > 0}
-														<span class="text-error text-xs">-{td.session_losses} losses</span>
-													{/if}
-													{#if td.session_gains === 0 && td.session_losses === 0}
-														<span class="text-text-dim text-xs">No changes this session</span>
-													{/if}
-												</div>
-												{#if td.history?.length}
-													<div>
-														<p class="text-xs text-text-dim mb-2">Recent history</p>
-														<div class="space-y-1 max-h-48 overflow-y-auto">
-															{#each td.history.slice(-20).reverse() as event}
-																<div class="flex items-start gap-2 text-xs py-1 border-b border-border-custom/50 last:border-0">
-																	<span class="font-mono shrink-0
-																		{event.direction === 'increase' ? 'text-success' : event.direction === 'decrease' ? 'text-error' : 'text-text-dim'}">
-																		{event.direction === 'increase' ? '+' : event.direction === 'decrease' ? '-' : '·'}{Math.abs(event.change)}
-																	</span>
-																	<span class="text-text-dim shrink-0">{formatDate(event.date)}</span>
-																	{#if event.reason}
-																		<span class="text-text flex-1">{event.reason}</span>
-																	{/if}
-																</div>
-															{/each}
-														</div>
-													</div>
-												{:else}
-													<p class="text-xs text-text-dim">No trust history recorded.</p>
-												{/if}
-											</div>
-										{/if}
-									</div>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{/if}
-			</div>
+		<!-- ═══════════ GRAPH ═══════════ -->
+		<!-- ═══════════ SETTINGS ═══════════ -->
+		{:else if activeTool === 'settings'}
+			<RPSettings {rpFolder} />
 
 		<!-- ═══════════ GRAPH ═══════════ -->
 		{:else if activeTool === 'graph'}
@@ -697,7 +530,9 @@
 					{#if !graphFilteredData}
 						<div class="flex items-center justify-center h-full text-xs text-text-dim">Loading graph data...</div>
 					{:else}
+						{#key [...graphHiddenTypes].sort().join(',')}
 						<ForceGraph data={graphFilteredData} filter={graphFilter} onNodeClick={handleGraphNodeClick} />
+					{/key}
 					{/if}
 				</div>
 

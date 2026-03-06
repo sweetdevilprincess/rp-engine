@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -45,6 +46,7 @@ class ChatManager:
         self.analysis_pipeline = analysis_pipeline
         self.lance_store = lance_store
         self.config = config
+        self._bg_tasks: set[asyncio.Task] = set()
 
     async def chat(
         self,
@@ -186,27 +188,25 @@ class ChatManager:
         assistant_response: str,
     ) -> tuple[int, int]:
         """Save exchange to DB, enqueue for analysis, embed in vector store."""
-        # Get next exchange number
-        latest = await self.db.fetch_val(
-            "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, branch],
-        )
-        exchange_number = (latest or 0) + 1
         now = datetime.now(UTC).isoformat()
 
         content_hash = hashlib.sha256(
             (user_message + assistant_response).encode()
         ).hexdigest()[:16]
 
+        # Atomic exchange number assignment — single INSERT...SELECT avoids race conditions
         future = await self.db.enqueue_write(
             """INSERT INTO exchanges (session_id, rp_folder, branch, exchange_number,
                user_message, assistant_response, analysis_status, created_at, idempotency_key)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+               VALUES (?, ?, ?, COALESCE(
+                   (SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?), 0
+               ) + 1, ?, ?, 'pending', ?, ?)""",
             [
                 session_id,
                 rp_folder,
                 branch,
-                exchange_number,
+                rp_folder,
+                branch,
                 user_message,
                 assistant_response,
                 now,
@@ -215,6 +215,12 @@ class ChatManager:
             priority=PRIORITY_EXCHANGE,
         )
         exchange_id = await future
+
+        # Retrieve the assigned exchange number
+        exchange_number = await self.db.fetch_val(
+            "SELECT exchange_number FROM exchanges WHERE id = ?",
+            [exchange_id],
+        )
 
         # Background vector embedding
         if self.lance_store is not None:
@@ -230,7 +236,9 @@ class ChatManager:
                     )
                 except Exception as e:
                     logger.warning("Chat embedding failed: %s", e)
-            asyncio.create_task(_embed())
+            task = asyncio.create_task(_embed())
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
 
         # Enqueue for analysis
         if self.analysis_pipeline is not None:
@@ -256,5 +264,4 @@ class ChatManager:
 
 def _json_escape(s: str) -> str:
     """Escape a string for JSON embedding in SSE data."""
-    import json
     return json.dumps(s)

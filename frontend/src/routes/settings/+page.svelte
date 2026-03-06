@@ -37,6 +37,7 @@
 	let llmNpcReactions = 'anthropic/claude-haiku';
 	let llmAnalysis     = 'google/gemini-2.0-flash-001';
 	let llmCardGen      = 'google/gemini-2.0-flash-001';
+	let llmChat         = '';
 	let llmEmbeddings   = 'openai/text-embedding-3-small';
 	let llmFallback     = 'google/gemini-2.0-flash-001';
 	let llmDefaultPov   = 'Lilith';
@@ -137,6 +138,7 @@
 			llmNpcReactions    = cfg.llm.models.npc_reactions;
 			llmAnalysis        = cfg.llm.models.response_analysis;
 			llmCardGen         = cfg.llm.models.card_generation;
+			llmChat            = cfg.chat.model ?? '';
 			llmEmbeddings      = cfg.llm.models.embeddings;
 			llmFallback        = cfg.llm.fallback_model;
 			llmDefaultPov      = cfg.rp.default_pov_character;
@@ -219,6 +221,7 @@
 			},
 			fallback_model: llmFallback,
 		});
+		save('chat', { model: llmChat.trim() || null });
 		save('rp', { default_pov_character: llmDefaultPov });
 	}
 	function saveSearch() {
@@ -545,6 +548,11 @@
 					<div>
 						<label class="block text-xs font-medium text-text-dim mb-1" for="llm-cardgen">Card Generation</label>
 						<InputField id="llm-cardgen" bind:value={llmCardGen} class="font-mono" />
+					</div>
+					<div>
+						<label class="block text-xs font-medium text-text-dim mb-1" for="llm-chat">Chat</label>
+						<InputField id="llm-chat" bind:value={llmChat} placeholder="(uses fallback model)" class="font-mono" />
+						<p class="text-[11px] text-text-dim/60 mt-1">Leave blank to use the fallback model for chat.</p>
 					</div>
 					<div>
 						<label class="block text-xs font-medium text-text-dim mb-1" for="llm-embed">Embeddings</label>

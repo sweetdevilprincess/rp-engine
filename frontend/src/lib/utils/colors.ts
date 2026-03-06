@@ -17,18 +17,18 @@ export interface ColorScheme {
 
 // -- Card type colors --
 export const CARD_TYPE_COLORS: Record<string, ColorScheme> = {
-	character:       { bg: 'rgba(139,111,192,0.12)', text: '#7c5eb8', hex: '#8b6fc0' },
-	npc:             { bg: 'rgba(109,140,94,0.12)',  text: '#5a7a4d', hex: '#6d8c5e' },
-	location:        { bg: 'rgba(94,130,168,0.12)',  text: '#4a7095', hex: '#5e82a8' },
-	secret:          { bg: 'rgba(184,92,85,0.12)',   text: '#a04d48', hex: '#b85c55' },
-	memory:          { bg: 'rgba(150,120,184,0.12)', text: '#7858a0', hex: '#9678b8' },
-	knowledge:       { bg: 'rgba(184,159,106,0.12)', text: '#967e48', hex: '#b89f6a' },
-	organization:    { bg: 'rgba(192,154,94,0.12)',  text: '#906e40', hex: '#c09a5e' },
-	plot_thread:     { bg: 'rgba(184,126,150,0.12)', text: '#905868', hex: '#b87e96' },
-	item:            { bg: 'rgba(94,168,160,0.12)',  text: '#3a8880', hex: '#5ea8a0' },
-	lore:            { bg: 'rgba(120,130,184,0.12)', text: '#5860a0', hex: '#7882b8' },
-	plot_arc:        { bg: 'rgba(192,126,128,0.12)', text: '#a06068', hex: '#c07e80' },
-	chapter_summary: { bg: 'rgba(140,129,118,0.10)', text: '#6e6560', hex: '#8c8176' },
+	character:       { bg: 'rgba(139,111,192,0.12)', text: '#7c5eb8', hex: '#a68ed6' },
+	npc:             { bg: 'rgba(109,140,94,0.12)',  text: '#5a7a4d', hex: '#8ab47a' },
+	location:        { bg: 'rgba(94,130,168,0.12)',  text: '#4a7095', hex: '#7ea8cc' },
+	secret:          { bg: 'rgba(184,92,85,0.12)',   text: '#a04d48', hex: '#d4827b' },
+	memory:          { bg: 'rgba(150,120,184,0.12)', text: '#7858a0', hex: '#b498d0' },
+	knowledge:       { bg: 'rgba(184,159,106,0.12)', text: '#967e48', hex: '#d4bf8a' },
+	organization:    { bg: 'rgba(192,154,94,0.12)',  text: '#906e40', hex: '#dab87e' },
+	plot_thread:     { bg: 'rgba(184,126,150,0.12)', text: '#905868', hex: '#d4a0b6' },
+	item:            { bg: 'rgba(94,168,160,0.12)',  text: '#3a8880', hex: '#80c8c0' },
+	lore:            { bg: 'rgba(120,130,184,0.12)', text: '#5860a0', hex: '#9aa2d0' },
+	plot_arc:        { bg: 'rgba(192,126,128,0.12)', text: '#a06068', hex: '#d8a0a2' },
+	chapter_summary: { bg: 'rgba(140,129,118,0.10)', text: '#6e6560', hex: '#b0a596' },
 };
 
 const DEFAULT_COLOR: ColorScheme = { bg: 'rgba(140,129,118,0.10)', text: '#6e6560', hex: '#8c8176' };
@@ -119,13 +119,13 @@ export function significanceColor(sig: string | null): string {
 
 // -- Edge type colors for ForceGraph (muted warm palette) --
 export const EDGE_TYPE_COLORS: Record<string, string> = {
-	relationship: '#8b6fc0',  // purple (character)
-	location:     '#5e82a8',  // steel blue
-	member:       '#c09a5e',  // amber (organization)
-	connection:   '#847a6e',  // warm gray
-	knows_about:  '#b89f6a',  // gold (knowledge)
-	belongs_to:   '#6d8c5e',  // sage (accent)
-	involved_in:  '#b87e96',  // muted pink (plot_thread)
+	relationship: '#b8a0d8',  // soft purple
+	location:     '#8cb8d8',  // soft steel blue
+	member:       '#d8c090',  // soft amber
+	connection:   '#b0a698',  // warm gray
+	knows_about:  '#d4c498',  // soft gold
+	belongs_to:   '#98c088',  // soft sage
+	involved_in:  '#d8a8b8',  // soft pink
 };
 
 // Trust bar positive/negative hex
@@ -141,7 +141,7 @@ export const GRAPH_FILTER_TYPES = [
 ];
 
 // -- Bar / progress helper --
-export function barStyle(value: number, max: number): string {
+export function progressBarStyle(value: number, max: number): string {
 	const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
 	const color = pct >= 80 ? 'var(--color-error)' : pct >= 50 ? 'var(--color-warm)' : 'var(--color-accent)';
 	return `width: ${pct}%; background: linear-gradient(90deg, ${color}cc, ${color});`;

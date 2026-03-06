@@ -293,7 +293,7 @@ class ContextEngine:
         npc_ids = list(all_npcs.keys())
         card_map: dict[str, dict] = {}
         runtime_map: dict[str, dict] = {}
-        trust_map: dict[str, int] = {}  # npc name (lower) -> trust score
+        trust_map: dict[tuple[str, str], int] = {}  # (char_a_lower, char_b_lower) -> trust score
 
         if npc_ids:
             # Batch card data
@@ -330,10 +330,9 @@ class ContextEngine:
             )
             for row in baseline_rows:
                 ca, cb = row["ca"], row["cb"]
-                if ca in npc_names_lower:
-                    trust_map[ca] = trust_map.get(ca, 0) + row["baseline_score"]
-                if cb in npc_names_lower and cb != ca:
-                    trust_map[cb] = trust_map.get(cb, 0) + row["baseline_score"]
+                pair = (ca, cb)
+                if ca in npc_names_lower or cb in npc_names_lower:
+                    trust_map[pair] = trust_map.get(pair, 0) + row["baseline_score"]
 
             mod_rows = await self.db.fetch_all(
                 """SELECT LOWER(character_a) as ca, LOWER(character_b) as cb,
@@ -344,10 +343,9 @@ class ContextEngine:
             )
             for row in mod_rows:
                 ca, cb = row["ca"], row["cb"]
-                if ca in npc_names_lower:
-                    trust_map[ca] = trust_map.get(ca, 0) + row["total"]
-                if cb in npc_names_lower and cb != ca:
-                    trust_map[cb] = trust_map.get(cb, 0) + row["total"]
+                pair = (ca, cb)
+                if ca in npc_names_lower or cb in npc_names_lower:
+                    trust_map[pair] = trust_map.get(pair, 0) + row["total"]
 
         active_npc_ids = {n.entity_id for n in extraction.active_npcs}
 
@@ -368,7 +366,12 @@ class ContextEngine:
             }
 
             if importance and importance in BRIEF_IMPORTANCE:
-                pre_trust = trust_map.get(npc.name.lower(), 0)
+                # Sum trust from all pairs involving this NPC
+                npc_lower = npc.name.lower()
+                pre_trust = sum(
+                    score for (ca, cb), score in trust_map.items()
+                    if ca == npc_lower or cb == npc_lower
+                )
                 brief = self.npc_brief_builder.build_brief(
                     npc.name, char_row, pre_trust, signal_list
                 )

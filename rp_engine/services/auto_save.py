@@ -60,6 +60,7 @@ class AutoSaveManager:
         self.lance_store = lance_store
         self._sessions: dict[str, SessionTracker] = {}
         self._active_rp: bool = False  # Off by default
+        self._bg_tasks: set[asyncio.Task] = set()
 
     def set_active(self, enabled: bool) -> None:
         """Toggle auto-save globally."""
@@ -170,22 +171,25 @@ class AutoSaveManager:
     ) -> AutoSaveResult:
         """Insert exchange into DB and enqueue for analysis."""
         now = datetime.now(UTC).isoformat()
-        exchange_number = tracker.next_exchange_number
 
         # Idempotency key from content hash
         content_hash = hashlib.sha256(
             (user_message + assistant_response).encode()
         ).hexdigest()[:16]
 
+        # Atomic exchange number assignment — avoids race with concurrent inserts
         future = await self.db.enqueue_write(
             """INSERT INTO exchanges (session_id, rp_folder, branch, exchange_number,
                user_message, assistant_response, analysis_status, created_at, idempotency_key)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+               VALUES (?, ?, ?, COALESCE(
+                   (SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?), 0
+               ) + 1, ?, ?, 'pending', ?, ?)""",
             [
                 tracker.session_id,
                 tracker.rp_folder,
                 tracker.branch,
-                exchange_number,
+                tracker.rp_folder,
+                tracker.branch,
                 user_message,
                 assistant_response,
                 now,
@@ -194,6 +198,12 @@ class AutoSaveManager:
             priority=PRIORITY_EXCHANGE,
         )
         exchange_id = await future
+
+        # Retrieve the assigned exchange number
+        exchange_number = await self.db.fetch_val(
+            "SELECT exchange_number FROM exchanges WHERE id = ?",
+            [exchange_id],
+        )
 
         # Background vector embedding (non-blocking, independent of LLM analysis)
         if self.lance_store is not None:
@@ -209,7 +219,9 @@ class AutoSaveManager:
                     )
                 except Exception as e:
                     logger.warning("Auto-save embedding failed: %s", e)
-            asyncio.create_task(_embed())
+            task = asyncio.create_task(_embed())
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
 
         # Enqueue for analysis
         if self.analysis_pipeline is not None:
@@ -217,7 +229,7 @@ class AutoSaveManager:
                 exchange_id, tracker.rp_folder, tracker.branch
             )
 
-        tracker.next_exchange_number += 1
+        tracker.next_exchange_number = exchange_number + 1
 
         logger.info(
             "Auto-saved exchange %d (id=%d) for session %s",

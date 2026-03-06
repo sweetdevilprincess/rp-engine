@@ -305,7 +305,9 @@ class ServiceContainer:
         await self.llm_client.close()
         await self.lance_store.close()
         await self.file_watcher.stop()
-        self.npc_intelligence.close()
-        self.writing_intelligence.close()
+        if self.npc_intelligence:
+            self.npc_intelligence.close()
+        if self.writing_intelligence:
+            self.writing_intelligence.close()
         await self.db.close()
         logger.info("Service container closed")

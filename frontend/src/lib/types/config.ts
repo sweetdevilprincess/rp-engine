@@ -12,6 +12,7 @@ export interface AppConfig {
 		};
 		fallback_model: string;
 	};
+	chat: { exchange_window: number; model: string | null; temperature: number; max_tokens: number };
 	context: { max_documents: number; max_graph_hops: number; stale_threshold_turns: number };
 	search: {
 		vector_weight: number;
@@ -35,6 +36,7 @@ export interface ConfigUpdate {
 	server?: Partial<AppConfig['server']>;
 	paths?: Partial<AppConfig['paths']>;
 	llm?: Partial<AppConfig['llm']>;
+	chat?: Partial<AppConfig['chat']>;
 	context?: Partial<AppConfig['context']>;
 	search?: Partial<AppConfig['search']>;
 	trust?: Partial<AppConfig['trust']>;

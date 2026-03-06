@@ -10,14 +10,13 @@
 
 	interface Props {
 		type: CardType;
-		size?: 'sm' | 'md';
 	}
 
-	let { type, size = 'sm' }: Props = $props();
+	let { type }: Props = $props();
 
 	let colors = $derived(cardTypeColors(type));
 </script>
 
 <Badge color={colors.text} bg={colors.bg} dot={colors.hex}>
-	{type.replace('_', ' ')}
+	{type.replaceAll('_', ' ')}
 </Badge>

@@ -1,8 +1,17 @@
 <footer class="h-11 bg-surface border-t border-border-custom flex items-center justify-between px-4 shrink-0">
 	<div class="flex items-center gap-5">
-		<span class="text-[13px] text-text-dim hover:text-text cursor-pointer transition-colors">Issues</span>
-		<span class="text-[13px] text-text-dim hover:text-text cursor-pointer transition-colors">Guides</span>
-		<span class="text-[13px] text-text-dim hover:text-text cursor-pointer transition-colors">Contact</span>
+		<a
+			href="https://github.com/sweetdevilprincess/rp-engine/issues"
+			target="_blank"
+			rel="noopener noreferrer"
+			class="text-[13px] text-text-dim hover:text-text transition-colors"
+		>Issues</a>
+		<a
+			href="https://github.com/sweetdevilprincess/rp-engine"
+			target="_blank"
+			rel="noopener noreferrer"
+			class="text-[13px] text-text-dim hover:text-text transition-colors"
+		>GitHub</a>
 	</div>
 
 	<a

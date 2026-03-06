@@ -76,13 +76,6 @@ class PromptAssembler:
             ],
         }
 
-        # Check if writing guide file exists
-        writing_path = self.vault_root / "z_AI Files" / "Claude" / "Guides" / "UNIVERSAL_WRITING_PRINCIPLES.md"
-        if writing_path.exists():
-            section["source"] = "UNIVERSAL_WRITING_PRINCIPLES.md"
-        else:
-            section["source"] = "hardcoded_defaults"
-
         return section
 
     def _build_npc_framework_section(self) -> dict:

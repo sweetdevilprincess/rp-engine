@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -6,6 +7,7 @@
 	--color-bg-subtle: #ece7dc;
 	--color-surface: #faf8f3;
 	--color-surface-raised: #ffffff;
+	--color-surface2: #f0ece3;
 	--color-border-custom: #ddd6c9;
 	--color-border-subtle: #e8e2d7;
 	--color-border-warm: #d4c9b8;
@@ -43,14 +45,6 @@
 
 :root {
 	--radius: 0.5rem;
-}
-
-@font-face {
-	font-family: 'Lora';
-	font-style: normal;
-	font-weight: 400 700;
-	font-display: swap;
-	src: url('https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&display=swap');
 }
 
 body {

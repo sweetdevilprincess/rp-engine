@@ -12,18 +12,32 @@
 	import InfoRow from '$lib/components/ui/InfoRow.svelte';
 
 	// ── Chat state ────────────────────────────────────────────
-	let messages: ChatMessage[] = [];
-	let userInput = '';
-	let sending = false;
+	let messages: ChatMessage[] = $state([]);
+	let userInput = $state('');
+	let sending = $state(false);
 	let chatLog: HTMLDivElement;
 
 	// ── Stats panel ───────────────────────────────────────────
-	let showStats = true;
-	let stateSnapshot: StateSnapshot | null = null;
-	let loadingState = false;
+	let showStats = $state(true);
+	let stateSnapshot: StateSnapshot | null = $state(null);
+	let loadingState = $state(false);
+
+	const STORAGE_KEY = 'rp-chat-messages';
 
 	onMount(async () => {
+		// Restore chat history from sessionStorage
+		try {
+			const stored = sessionStorage.getItem(STORAGE_KEY);
+			if (stored) messages = JSON.parse(stored);
+		} catch {}
 		await loadState();
+	});
+
+	$effect(() => {
+		// Persist chat history on change
+		try {
+			sessionStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+		} catch {}
 	});
 
 	async function loadState() {

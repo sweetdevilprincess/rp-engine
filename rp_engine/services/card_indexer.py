@@ -7,6 +7,7 @@ Two-pass indexing: (1) build entity+alias maps, (2) extract connections.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -231,6 +232,8 @@ class CardIndexer:
                 entity_keys, alias_map, rp_folder,
             )
             for conn in connections:
+                if conn["to"] is None:
+                    continue
                 future = await self.db.enqueue_write(
                     """INSERT INTO entity_connections
                        (from_entity, to_entity, connection_type, field, role)
@@ -347,6 +350,8 @@ class CardIndexer:
             entity_keys, alias_map_db, rp_folder,
         )
         for conn in connections:
+            if conn["to"] is None:
+                continue
             future = await self.db.enqueue_write(
                 """INSERT INTO entity_connections
                    (from_entity, to_entity, connection_type, field, role)
@@ -665,7 +670,6 @@ class CardIndexer:
                 name = strip_parenthetical(raw)
                 role_match = None
                 # Extract the parenthetical as the role
-                import re
                 paren = re.search(r"\(([^)]+)\)", raw)
                 if paren:
                     role_match = paren.group(1)
@@ -811,8 +815,8 @@ class CardIndexer:
 
         Tries 4 strategies. Falls back to ``rp_folder:normalize_key(ref)``.
         """
-        if not ref:
-            return f"{rp_folder}:"
+        if not ref or not ref.strip():
+            return None
 
         raw = str(ref)
 

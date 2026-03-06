@@ -153,9 +153,8 @@ async def end_session(
         ),
         db.fetch_all(
             """SELECT tm.change, tm.reason,
-                      r.character_a, r.character_b
+                      tm.character_a, tm.character_b
                FROM trust_modifications tm
-               JOIN relationships r ON tm.relationship_id = r.id
                JOIN exchanges ex ON tm.exchange_id = ex.id
                WHERE ex.session_id = ?
                ORDER BY tm.created_at""",
@@ -225,25 +224,35 @@ async def end_session(
     ]
 
     # Plot thread status — batch start_counter lookup
-    plot_thread_status = []
-    for t in thread_rows:
-        start_counter = 0
-        if first_exchange_num:
-            start_val = await db.fetch_val(
-                """SELECT counter_value FROM thread_counter_entries
-                   WHERE thread_id = ? AND rp_folder = ? AND branch = ?
-                     AND exchange_number < ?
-                   ORDER BY exchange_number DESC LIMIT 1""",
-                [t["thread_id"], rp_folder, branch, first_exchange_num],
-            )
-            if start_val is not None:
-                start_counter = start_val
-        plot_thread_status.append(PlotThreadStatus(
+    start_counter_map: dict[int, int] = {}
+    if thread_rows and first_exchange_num:
+        thread_ids = [t["thread_id"] for t in thread_rows]
+        tid_placeholders = ",".join("?" for _ in thread_ids)
+        start_rows = await db.fetch_all(
+            f"""SELECT thread_id, counter_value
+                FROM thread_counter_entries tce
+                WHERE thread_id IN ({tid_placeholders})
+                  AND rp_folder = ? AND branch = ?
+                  AND exchange_number < ?
+                  AND exchange_number = (
+                      SELECT MAX(exchange_number) FROM thread_counter_entries
+                      WHERE thread_id = tce.thread_id AND rp_folder = tce.rp_folder
+                        AND branch = tce.branch AND exchange_number < ?
+                  )""",
+            thread_ids + [rp_folder, branch, first_exchange_num, first_exchange_num],
+        )
+        for row in start_rows:
+            start_counter_map[row["thread_id"]] = row["counter_value"]
+
+    plot_thread_status = [
+        PlotThreadStatus(
             thread_id=t["thread_id"],
             name=t["name"],
-            start_counter=start_counter,
+            start_counter=start_counter_map.get(t["thread_id"], 0),
             end_counter=t["current_counter"],
-        ))
+        )
+        for t in thread_rows
+    ]
     scene_progression = SceneProgression(
         first_timestamp=first_exchange.get("in_story_timestamp") if first_exchange else None,
         last_timestamp=last_exchange.get("in_story_timestamp") if last_exchange else None,

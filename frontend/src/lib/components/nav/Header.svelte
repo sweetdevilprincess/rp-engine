@@ -20,7 +20,6 @@
 		{ path: '/dashboard',   label: 'Dashboard',   rpRequired: true  },
 		{ path: '/chat',        label: 'Chat',        rpRequired: true  },
 		{ path: '/dev',         label: 'Dev',         rpRequired: true  },
-		{ path: '/settings',    label: 'RP Settings', rpRequired: true  },
 		{ path: '/settings',    label: 'Settings',    rpRequired: false },
 	];
 

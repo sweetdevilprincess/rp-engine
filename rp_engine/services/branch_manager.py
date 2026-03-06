@@ -210,9 +210,9 @@ class BranchManager:
         mod_pairs = await self.db.fetch_all(
             """SELECT character_a, character_b, SUM(change) as total_change
                FROM trust_modifications
-               WHERE rp_folder = ? AND branch = ?
+               WHERE rp_folder = ? AND branch = ? AND exchange_number <= ?
                GROUP BY character_a, character_b""",
-            [rp_folder, source_branch],
+            [rp_folder, source_branch, branch_point_exchange],
         )
 
         # Get existing baselines on source

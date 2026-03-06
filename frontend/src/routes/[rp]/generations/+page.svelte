@@ -8,49 +8,52 @@
 	import SelectField from '$lib/components/ui/SelectField.svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 
-	const ARCHETYPES = [
-		{ value: '', label: '(none)' },
-		{ value: 'POWER_HOLDER', label: 'Power Holder' },
-		{ value: 'TRANSACTIONAL', label: 'Transactional' },
-		{ value: 'COMMON_PEOPLE', label: 'Common People' },
-		{ value: 'OPPOSITION', label: 'Opposition' },
-		{ value: 'SPECIALIST', label: 'Specialist' },
-		{ value: 'PROTECTOR', label: 'Protector' },
-		{ value: 'OUTSIDER', label: 'Outsider' },
-	];
-
-	const MODIFIERS = [
-		'OBSESSIVE', 'SADISTIC', 'PARANOID', 'FANATICAL',
-		'NARCISSISTIC', 'SOCIOPATHIC', 'ADDICTED', 'HONOR_BOUND', 'GRIEF_CONSUMED',
-	];
+	import { ARCHETYPES, MODIFIERS } from '$lib/constants/archetypes';
 
 	// Form inputs
-	let entityName = '';
-	let cardType: CardType = 'npc';
-	let prompt = '';
-	let buildOnPrevious = false;
-	let primaryArchetype = '';
-	let secondaryArchetype = '';
-	let selectedModifiers: string[] = [];
+	let entityName = $state('');
+	let cardType = $state<CardType>('npc');
+	let prompt = $state('');
+	let buildOnPrevious = $state(false);
+	let primaryArchetype = $state('');
+	let secondaryArchetype = $state('');
+	let selectedModifiers = $state<string[]>([]);
 
 	// Relations
-	let relations: StoryCardSummary[] = [];
-	let relationSearch = '';
-	let searchResults: StoryCardSummary[] = [];
-	let showSearchDropdown = false;
-	let allCards: StoryCardSummary[] = [];
-	let cardsLoaded = false;
+	let relations = $state<StoryCardSummary[]>([]);
+	let relationSearch = $state('');
+	let searchResults = $state<StoryCardSummary[]>([]);
+	let showSearchDropdown = $state(false);
+	let allCards = $state<StoryCardSummary[]>([]);
+	let cardsLoaded = $state(false);
 
 	// Generation state
-	let generating = false;
-	let output: SuggestCardResponse | null = null;
-	let previousOutput: SuggestCardResponse | null = null;
+	let generating = $state(false);
+	let output = $state<SuggestCardResponse | null>(null);
+	let previousOutput = $state<SuggestCardResponse | null>(null);
 
 	// Save state
-	let saving = false;
+	let saving = $state(false);
 
 	// Alter mode
-	let altering = false;
+	let altering = $state(false);
+
+	// Frontmatter collapse
+	let frontmatterOpen = $state(false);
+
+	/** Split raw markdown into frontmatter and body */
+	function splitFrontmatter(raw: string): { fm: string; body: string } {
+		const match = raw.match(/^(---\r?\n[\s\S]*?\r?\n---)\r?\n?/);
+		if (match) {
+			return { fm: match[1], body: raw.slice(match[0].length).trim() };
+		}
+		return { fm: '', body: raw.trim() };
+	}
+
+	/** Strip wrapping ```markdown ... ``` code fences the LLM sometimes adds. */
+	function stripCodeFences(raw: string): string {
+		return raw.replace(/^```(?:markdown|md)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+	}
 
 	// Debounce timer
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -151,6 +154,7 @@
 		try {
 			const context = buildContext() || undefined;
 			const result = await suggestCard(entityName.trim(), cardType, context);
+			result.markdown = stripCodeFences(result.markdown);
 			// Store previous for "build on previous"
 			if (output) previousOutput = output;
 			output = result;
@@ -178,6 +182,7 @@
 				'\n\nInstructions: ' +
 				prompt.trim();
 			const result = await suggestCard(entityName.trim(), cardType, alterContext);
+			result.markdown = stripCodeFences(result.markdown);
 			previousOutput = output;
 			output = result;
 		} catch (err: any) {
@@ -238,8 +243,22 @@
 					</div>
 				</div>
 			{:else if output}
+				{@const parts = splitFrontmatter(output.markdown)}
 				<div class="flex-1 overflow-auto">
-					<pre class="text-sm text-text whitespace-pre-wrap break-words font-mono leading-relaxed">{output.markdown}</pre>
+					{#if parts.fm}
+						<button
+							class="flex items-center gap-1.5 text-[11px] text-text-dim hover:text-text transition-colors mb-2"
+							onclick={() => (frontmatterOpen = !frontmatterOpen)}
+						>
+							<span class="inline-block transition-transform {frontmatterOpen ? 'rotate-90' : ''}"
+								style="font-size: 10px">&#9654;</span>
+							Frontmatter
+						</button>
+						{#if frontmatterOpen}
+							<pre class="text-xs text-text-dim whitespace-pre-wrap break-words font-mono leading-relaxed bg-bg-subtle rounded-lg p-3 mb-3 border border-border-custom/50">{parts.fm}</pre>
+						{/if}
+					{/if}
+					<pre class="text-sm text-text whitespace-pre-wrap break-words font-mono leading-relaxed">{parts.body}</pre>
 				</div>
 			{:else}
 				<div class="flex-1 flex items-center justify-center">
@@ -353,7 +372,7 @@
 							onclick={() => toggleModifier(mod)}
 							disabled={selectedModifiers.length >= 3 && !selectedModifiers.includes(mod)}
 						>
-							{mod.replace('_', ' ')}
+							{mod.replaceAll('_', ' ')}
 						</button>
 					{/each}
 				</div>

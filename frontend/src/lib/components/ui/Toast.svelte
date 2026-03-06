@@ -23,6 +23,7 @@
 	<span class="flex-1 text-sm text-text">{toast.message}</span>
 	<button
 		class="text-text-dim hover:text-text text-lg leading-none"
+		aria-label="Close"
 		onclick={() => removeToast(toast.id)}
 	>
 		&times;

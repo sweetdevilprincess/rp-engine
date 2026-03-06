@@ -104,7 +104,7 @@
 		for (const [key, color] of Object.entries(EDGE_TYPE_COLORS)) {
 			if (type.includes(key)) return color;
 		}
-		return '#475569';
+		return '#b0a698';
 	}
 
 	function getNodeRadius(node: ForceNode): number {
@@ -141,6 +141,7 @@
 			.width(rect.width)
 			.height(rect.height)
 			.backgroundColor('transparent')
+			.d3AlphaDecay(0.02)
 			.nodeId('id')
 			.nodeLabel((node: ForceNode) => `${node.id} (${node.card_type})`)
 			.nodeCanvasObject((node: ForceNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
@@ -155,9 +156,11 @@
 
 				// Circle
 				ctx.beginPath();
-				ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
+				ctx.arc(node.x!, node.y!, r, 0, 3 * Math.PI);
 				ctx.fillStyle = color;
+				ctx.globalAlpha = 0.45;
 				ctx.fill();
+				ctx.globalAlpha = 1.0;
 				ctx.shadowBlur = 0;
 
 				// Border
@@ -181,16 +184,26 @@
 				ctx.fillStyle = color;
 				ctx.fill();
 			})
-			.linkColor((link: ForceLink) => {
+			.linkCanvasObjectMode(() => 'replace')
+			.linkCanvasObject((link: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+				const src = link.source;
+				const tgt = link.target;
+				if (!src || !tgt || src.x == null || tgt.x == null) return;
+
+				// Use raw width in graph coordinates — canvas transform handles zoom scaling
+				const width = getLinkWidth(link);
+
 				const baseColor = getEdgeColor(link);
-				// Higher weight = more opaque
-				const opacity = Math.min(0.3 + link.weight * 0.15, 1);
-				return baseColor + Math.round(opacity * 255).toString(16).padStart(2, '0');
+				const opacity = Math.min(0.15 + link.weight * 0.08, 0.25);
+
+				ctx.beginPath();
+				ctx.moveTo(src.x, src.y);
+				ctx.lineTo(tgt.x, tgt.y);
+				ctx.strokeStyle = baseColor + Math.round(opacity * 255).toString(16).padStart(2, '0');
+				ctx.lineWidth = width;
+				ctx.stroke();
 			})
-			.linkWidth((link: ForceLink) => getLinkWidth(link))
 			.linkLabel((link: ForceLink) => link.connection_type)
-			.linkDirectionalArrowLength(3)
-			.linkDirectionalArrowRelPos(1)
 			.enableNodeDrag(true)
 			.minZoom(0.3)
 			.maxZoom(8)
@@ -199,6 +212,10 @@
 				if (onNodeClick) onNodeClick({ name: node.id, card_type: node.card_type, importance: node.importance });
 			})
 			.graphData(gd);
+
+		// Spread the graph out more
+		graph.d3Force('charge').strength(-120);
+		graph.d3Force('link').distance(80);
 
 		// Fit view after simulation stabilizes
 		setTimeout(() => {

@@ -577,10 +577,11 @@ class StateManager:
                 live_trust_score=current_live, trust_stage=trust_stage(current_live),
             )
 
-        # Ensure trust baseline exists for this pair/branch
+        # Ensure trust baseline exists for this pair/branch (case-insensitive match)
         existing_baseline = await self.db.fetch_one(
             """SELECT * FROM trust_baselines
-               WHERE character_a = ? AND character_b = ? AND rp_folder = ? AND branch = ?""",
+               WHERE LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)
+                 AND rp_folder = ? AND branch = ?""",
             [char_a, char_b, rp_folder, branch],
         )
         if not existing_baseline:

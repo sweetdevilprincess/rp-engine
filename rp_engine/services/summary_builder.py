@@ -137,10 +137,9 @@ class SummaryBuilder:
 
         # Trust modifications
         trust_rows = await self.db.fetch_all(
-            """SELECT tm.change, tm.reason, r.character_a, r.character_b,
+            """SELECT tm.change, tm.reason, tm.character_a, tm.character_b,
                       ex.exchange_number, ex.user_message, ex.assistant_response
                FROM trust_modifications tm
-               JOIN relationships r ON tm.relationship_id = r.id
                JOIN exchanges ex ON tm.exchange_id = ex.id
                WHERE ex.session_id = ?
                ORDER BY ABS(tm.change) DESC""",
@@ -159,30 +158,30 @@ class SummaryBuilder:
 
         # Thread counter changes
         thread_rows = await self.db.fetch_all(
-            """SELECT te.thread_id, pt.name, te.old_value, te.new_value,
-                      te.exchange_number, te.snippet
+            """SELECT te.thread_id, pt.name, te.counter_before, te.counter_after,
+                      te.exchange_number, te.chunk_text
                FROM thread_evidence te
-               JOIN plot_threads pt ON te.thread_id = pt.id
+               JOIN plot_threads pt ON te.thread_id = pt.id AND pt.rp_folder = te.rp_folder
                JOIN exchanges ex ON te.exchange_number = ex.exchange_number
                    AND ex.rp_folder = ? AND ex.branch = ?
                WHERE ex.session_id = ?
-               ORDER BY ABS(te.new_value - te.old_value) DESC""",
+               ORDER BY ABS(te.counter_after - te.counter_before) DESC""",
             [rp_folder, branch, session_id],
         )
         for row in thread_rows:
-            delta = (row["new_value"] or 0) - (row["old_value"] or 0)
+            delta = (row["counter_after"] or 0) - (row["counter_before"] or 0)
             moments.append({
                 "type": "thread_change",
                 "weight": 8 + abs(delta) * 2,
                 "thread_name": row["name"],
                 "delta": delta,
                 "exchange_number": row["exchange_number"],
-                "snippet": row.get("snippet") or "",
+                "snippet": row.get("chunk_text") or "",
             })
 
         # Significant events
         event_rows = await self.db.fetch_all(
-            """SELECT e.event, e.event_type, ex.exchange_number,
+            """SELECT e.event, ex.exchange_number,
                       ex.assistant_response
                FROM events e
                JOIN exchanges ex ON e.exchange_id = ex.id
@@ -195,7 +194,7 @@ class SummaryBuilder:
                 "type": "event",
                 "weight": 5,
                 "event": row["event"],
-                "event_type": row.get("event_type") or "general",
+                "event_type": "general",
                 "exchange_number": row["exchange_number"],
                 "snippet": (row["assistant_response"] or "")[:300],
             })
@@ -228,12 +227,11 @@ class SummaryBuilder:
     async def _get_trust_summary(self, session_id: str) -> str:
         """One-line trust change summary."""
         rows = await self.db.fetch_all(
-            """SELECT r.character_b, SUM(tm.change) as total
+            """SELECT tm.character_b, SUM(tm.change) as total
                FROM trust_modifications tm
-               JOIN relationships r ON tm.relationship_id = r.id
                JOIN exchanges ex ON tm.exchange_id = ex.id
                WHERE ex.session_id = ?
-               GROUP BY r.character_b""",
+               GROUP BY tm.character_b""",
             [session_id],
         )
         if not rows:

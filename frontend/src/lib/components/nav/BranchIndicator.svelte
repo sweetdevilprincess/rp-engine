@@ -1,16 +1,28 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { activeRP, activeBranch } from '$lib/stores/rp';
 
-	let showDropdown = false;
+	let showDropdown = $state(false);
+	let containerEl = $state<HTMLDivElement>();
 
 	function selectBranch(branch: string) {
 		activeBranch.set(branch);
 		showDropdown = false;
 	}
+
+	onMount(() => {
+		function handleClickOutside(e: MouseEvent) {
+			if (showDropdown && containerEl && !containerEl.contains(e.target as Node)) {
+				showDropdown = false;
+			}
+		}
+		window.addEventListener('click', handleClickOutside);
+		return () => window.removeEventListener('click', handleClickOutside);
+	});
 </script>
 
 {#if $activeRP}
-	<div class="relative">
+	<div class="relative" bind:this={containerEl}>
 		<button
 			class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 transition-colors"
 			onclick={() => (showDropdown = !showDropdown)}
