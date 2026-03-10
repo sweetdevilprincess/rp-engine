@@ -1,4 +1,5 @@
-from typing import Optional
+from __future__ import annotations
+
 from .types import (
     BehavioralSignature, Archetype, Modifier, TrustStage,
     InteractionType, SceneSignal,
@@ -44,13 +45,13 @@ class BehavioralClassifier:
 
     def classify(
         self,
-        archetype: Optional[str] = None,
-        modifiers: Optional[list[str]] = None,
-        trust_stage: Optional[str] = None,
+        archetype: str | None = None,
+        modifiers: list[str] | None = None,
+        trust_stage: str | None = None,
         trust_score: int = 0,
-        scene_signals: Optional[dict[str, float]] = None,
+        scene_signals: dict[str, float] | None = None,
         scene_prompt: str = "",
-        override: Optional[dict] = None,
+        override: dict | None = None,
     ) -> BehavioralSignature:
         """
         Produce a BehavioralSignature from structured RP Engine data.
@@ -107,7 +108,7 @@ class BehavioralClassifier:
             scene_signals=signals,
         )
 
-    def _normalize_archetype(self, archetype: Optional[str]) -> Archetype:
+    def _normalize_archetype(self, archetype: str | None) -> Archetype:
         if not archetype:
             return Archetype.COMMON_PEOPLE
         try:

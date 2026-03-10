@@ -33,6 +33,7 @@ EXCHANGE_SCHEMA = pa.schema([
     ("session_id", pa.string()),
     ("speaker", pa.string()),  # "user" or "assistant"
     ("in_story_timestamp", pa.string()),
+    ("chunking_hash", pa.string()),
 ])
 
 # Schema for card vectors
@@ -63,10 +64,12 @@ class LanceStore:
         db_path: str | Path,
         embed_fn: Callable | None = None,
         dimension: int = 384,
+        embedding_model: str = "unknown",
     ) -> None:
         self.db_path = Path(db_path)
         self._embed_fn = embed_fn
         self._dimension = dimension
+        self._embedding_model = embedding_model
         self._db = None
         self._exchange_table = None
         self._card_table = None
@@ -74,6 +77,7 @@ class LanceStore:
     async def initialize(self) -> None:
         """Open or create the LanceDB database and tables."""
         import asyncio
+
         import lancedb
 
         self.db_path.mkdir(parents=True, exist_ok=True)
@@ -107,40 +111,33 @@ class LanceStore:
         branch: str = "main",
         session_id: str | None = None,
         in_story_timestamp: str | None = None,
+        chunking_strategy: str = "fixed",
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
     ) -> int:
         """Chunk and embed an exchange (user + assistant). Returns chunk count."""
         if self._embed_fn is None or self._exchange_table is None:
             return 0
 
-        from rp_engine.utils.text import chunk_text
+        from rp_engine.utils.text import compute_chunking_hash, get_chunker
 
+        chunker = get_chunker(chunking_strategy)
+        c_hash = compute_chunking_hash(chunking_strategy, chunk_size, chunk_overlap, rp_folder)
         chunks_data = []
 
-        # Embed user message
-        user_chunks = chunk_text(user_message, chunk_size=1000, overlap=200)
-        for chunk in user_chunks:
-            chunks_data.append({
-                "text": chunk,
-                "exchange_number": exchange_number,
-                "rp_folder": rp_folder,
-                "branch": branch,
-                "session_id": session_id or "",
-                "speaker": "user",
-                "in_story_timestamp": in_story_timestamp or "",
-            })
+        # Shared metadata for all chunks in this exchange
+        base = {
+            "exchange_number": exchange_number,
+            "rp_folder": rp_folder,
+            "branch": branch,
+            "session_id": session_id or "",
+            "in_story_timestamp": in_story_timestamp or "",
+            "chunking_hash": c_hash,
+        }
 
-        # Embed assistant response
-        asst_chunks = chunk_text(assistant_response, chunk_size=1000, overlap=200)
-        for chunk in asst_chunks:
-            chunks_data.append({
-                "text": chunk,
-                "exchange_number": exchange_number,
-                "rp_folder": rp_folder,
-                "branch": branch,
-                "session_id": session_id or "",
-                "speaker": "assistant",
-                "in_story_timestamp": in_story_timestamp or "",
-            })
+        for speaker, text in [("user", user_message), ("assistant", assistant_response)]:
+            for chunk in chunker(text, chunk_size=chunk_size, overlap=chunk_overlap):
+                chunks_data.append({**base, "text": chunk, "speaker": speaker})
 
         if not chunks_data:
             return 0
@@ -150,7 +147,7 @@ class LanceStore:
             texts = [c["text"] for c in chunks_data]
             embeddings = await self._embed_fn(texts)
         except Exception as e:
-            logger.warning("Exchange embedding failed: %s", e)
+            logger.warning("Exchange embedding failed (model=%s): %s", self._embedding_model, e)
             return 0
 
         # Build records with vectors
@@ -187,7 +184,7 @@ class LanceStore:
         try:
             embeddings = await self._embed_fn(chunks)
         except Exception as e:
-            logger.warning("Card embedding failed for %s: %s", card_id, e)
+            logger.warning("Card embedding failed for %s (model=%s): %s", card_id, self._embedding_model, e)
             return 0
 
         records = []
@@ -222,7 +219,7 @@ class LanceStore:
             embeddings = await self._embed_fn([query_text])
             query_vec = embeddings[0]
         except Exception as e:
-            logger.warning("Exchange search embedding failed: %s", e)
+            logger.warning("Exchange search embedding failed (model=%s): %s", self._embedding_model, e)
             return []
 
         try:
@@ -271,7 +268,7 @@ class LanceStore:
             embeddings = await self._embed_fn([query_text])
             query_vec = embeddings[0]
         except Exception as e:
-            logger.warning("Card search embedding failed: %s", e)
+            logger.warning("Card search embedding failed (model=%s): %s", self._embedding_model, e)
             return []
 
         try:
@@ -301,6 +298,24 @@ class LanceStore:
             )
             for row in results
         ]
+
+    async def delete_exchange_vectors(
+        self,
+        rp_folder: str,
+        branch: str,
+        exchange_number: int,
+    ) -> None:
+        """Delete vectors for a specific exchange number."""
+        if self._exchange_table is None:
+            return
+        try:
+            await asyncio.to_thread(
+                self._exchange_table.delete,
+                f'rp_folder = "{_lance_escape(rp_folder)}" AND branch = "{_lance_escape(branch)}" '
+                f"AND exchange_number = {exchange_number}",
+            )
+        except Exception as e:
+            logger.warning("Exchange vector delete failed: %s", e)
 
     async def rewind_exchanges(
         self,
@@ -340,7 +355,7 @@ class LanceStore:
                     filters.append(f'branch = "{_lance_escape(branch)}"')
 
                 query = self._exchange_table.search().select(
-                    ["exchange_number", "chunk_index", "text", "rp_folder", "branch", "session_id"]
+                    ["exchange_number", "chunk_index", "text", "rp_folder", "branch", "session_id", "chunking_hash"]
                 )
                 if filters:
                     query = query.where(" AND ".join(filters))
@@ -358,25 +373,63 @@ class LanceStore:
         db,
         rp_folder: str | None = None,
         branch: str = "main",
+        chunking_strategy: str = "fixed",
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
+        selective: bool = False,
     ) -> dict:
-        """Re-embed all exchanges from the database. Returns stats."""
+        """Re-embed all exchanges from the database. Returns stats.
+
+        If ``selective=True``, skips exchanges whose vectors already have
+        a matching chunking_hash (avoids unnecessary re-embedding).
+        """
         if self._embed_fn is None or self._exchange_table is None:
             return {"status": "skipped", "reason": "no embed_fn or table"}
 
-        # Clear existing exchange vectors for this scope
-        try:
-            if rp_folder:
-                await asyncio.to_thread(
-                    self._exchange_table.delete,
-                    f'rp_folder = "{_lance_escape(rp_folder)}" AND branch = "{_lance_escape(branch)}"',
-                )
-            else:
-                await asyncio.to_thread(
-                    self._exchange_table.delete,
-                    "rp_folder IS NOT NULL",
-                )
-        except Exception:
-            pass
+        from rp_engine.utils.text import compute_chunking_hash
+
+        target_hash = compute_chunking_hash(chunking_strategy, chunk_size, chunk_overlap, rp_folder or "")
+
+        # Determine which exchange numbers already have the correct hash
+        existing_hashes: set[int] = set()
+        if selective and rp_folder:
+            try:
+                def _fetch_hashes():
+                    filters = [f'rp_folder = "{_lance_escape(rp_folder)}"']
+                    if branch:
+                        filters.append(f'branch = "{_lance_escape(branch)}"')
+                    results = (
+                        self._exchange_table.search()
+                        .select(["exchange_number", "chunking_hash"])
+                        .where(" AND ".join(filters))
+                        .limit(100000)
+                        .to_list()
+                    )
+                    up_to_date = set()
+                    for r in results:
+                        if r.get("chunking_hash") == target_hash:
+                            up_to_date.add(r["exchange_number"])
+                    return up_to_date
+
+                existing_hashes = await asyncio.to_thread(_fetch_hashes)
+            except Exception:
+                pass  # If query fails, rechunk everything
+
+        if not selective:
+            # Clear existing exchange vectors for this scope
+            try:
+                if rp_folder:
+                    await asyncio.to_thread(
+                        self._exchange_table.delete,
+                        f'rp_folder = "{_lance_escape(rp_folder)}" AND branch = "{_lance_escape(branch)}"',
+                    )
+                else:
+                    await asyncio.to_thread(
+                        self._exchange_table.delete,
+                        "rp_folder IS NOT NULL",
+                    )
+            except Exception:
+                pass
 
         # Load exchanges
         if rp_folder:
@@ -390,17 +443,35 @@ class LanceStore:
             )
 
         embedded = 0
+        skipped = 0
         failed = 0
         for row in rows:
+            ex_num = row["exchange_number"]
+
+            # Skip if already up-to-date
+            if selective and ex_num in existing_hashes:
+                skipped += 1
+                continue
+
+            # Delete old vectors for this exchange if selective
+            if selective:
+                try:
+                    await self.delete_exchange_vectors(row["rp_folder"], row["branch"], ex_num)
+                except Exception:
+                    pass
+
             try:
                 count = await self.embed_exchange(
-                    exchange_number=row["exchange_number"],
+                    exchange_number=ex_num,
                     user_message=row["user_message"],
                     assistant_response=row["assistant_response"],
                     rp_folder=row["rp_folder"],
                     branch=row["branch"],
                     session_id=row.get("session_id"),
                     in_story_timestamp=row.get("in_story_timestamp"),
+                    chunking_strategy=chunking_strategy,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
                 )
                 if count > 0:
                     embedded += 1
@@ -414,6 +485,7 @@ class LanceStore:
             "status": "complete",
             "total_exchanges": len(rows),
             "embedded": embedded,
+            "skipped": skipped,
             "failed": failed,
         }
 

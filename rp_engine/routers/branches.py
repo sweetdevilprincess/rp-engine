@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from rp_engine.dependencies import get_branch_manager
 from rp_engine.models.branch import (
+    BranchArchiveRequest,
     BranchCreate,
     BranchInfo,
     BranchListResponse,
@@ -46,6 +47,7 @@ async def create_branch(
             rp_folder=body.rp_folder,
             description=body.description,
             branch_from=body.branch_from,
+            branch_point_exchange=body.branch_point_exchange,
         )
     except ValueError as e:
         msg = str(e)
@@ -84,6 +86,23 @@ async def get_branch(
         return await branch_manager.get_branch(name, rp_folder)
     except ValueError as e:
         raise HTTPException(404, detail=str(e)) from None
+
+
+@router.patch("/{name}/archive", response_model=BranchInfo)
+async def archive_branch(
+    name: str,
+    body: BranchArchiveRequest,
+    rp_folder: str = Query(...),
+    branch_manager: BranchManager = Depends(get_branch_manager),
+):
+    """Archive or unarchive a branch."""
+    try:
+        return await branch_manager.set_archived(name, rp_folder, body.archived)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg:
+            raise HTTPException(404, detail=msg) from None
+        raise HTTPException(400, detail=msg) from None
 
 
 @router.post("/{name}/checkpoint", response_model=CheckpointInfo, status_code=201)

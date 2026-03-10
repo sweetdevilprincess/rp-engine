@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import yaml from 'js-yaml';
-	import { listCards, getCard, createCard, updateCard } from '$lib/api/cards';
+	import { listCards, getCard, createCard, updateCard, deleteCard, generateCardName } from '$lib/api/cards';
 	import { getFullState } from '$lib/api/state';
 	import { addToast } from '$lib/stores/ui';
 	import { activeRP } from '$lib/stores/rp';
@@ -34,6 +34,7 @@
 	// ── Editor state ──
 	type EditorMode = 'view' | 'edit' | 'create';
 	let mode = $state<EditorMode>('view');
+	let detailsOpen = $state(false);
 
 	// ── Form fields ──
 	let editYaml = $state('');
@@ -44,6 +45,28 @@
 	let createType = $state<CardType>('npc');
 	let createName = $state('');
 	let createStep = $state<1 | 2>(1);
+
+	// ── Delete state ──
+	let confirmDelete = $state(false);
+	let deleting = $state(false);
+
+	// ── Name generation ──
+	let nameHints = $state('');
+	let nameSuggestions = $state<string[]>([]);
+	let generatingNames = $state(false);
+
+	async function handleGenerateNames() {
+		generatingNames = true;
+		nameSuggestions = [];
+		try {
+			const res = await generateCardName(createType, nameHints || undefined);
+			nameSuggestions = res.suggestions;
+		} catch (e: any) {
+			addToast(e.message ?? 'Name generation failed', 'error');
+		} finally {
+			generatingNames = false;
+		}
+	}
 
 	// ── Relationships from state ──
 	let relationships = $state<RelationshipDetail[]>([]);
@@ -93,6 +116,7 @@
 	async function selectCard(card: StoryCardSummary) {
 		loadingCard = true;
 		mode = 'view';
+		confirmDelete = false;
 		try {
 			selectedCard = await getCard(card.card_type, card.name);
 		} catch (e: any) {
@@ -169,6 +193,27 @@
 			addToast(e.message ?? 'Save failed', 'error');
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function handleDelete() {
+		if (!selectedCard) return;
+		if (!confirmDelete) {
+			confirmDelete = true;
+			return;
+		}
+		deleting = true;
+		try {
+			await deleteCard(selectedCard.card_type, selectedCard.name);
+			addToast(`Deleted card: ${selectedCard.name}`, 'success');
+			selectedCard = null;
+			confirmDelete = false;
+			mode = 'view';
+			await loadCards();
+		} catch (e: any) {
+			addToast(e.message ?? 'Delete failed', 'error');
+		} finally {
+			deleting = false;
 		}
 	}
 
@@ -263,9 +308,35 @@
 							options={CARD_TYPES.map(ct => ({value: ct, label: ct.replaceAll('_', ' ')}))} />
 					</FormField>
 					<FormField label="Name" size="xs">
-						<InputField bind:value={createName} placeholder="Card name..." size="sm" onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && startCreateEditor()} />
+						<div class="flex gap-2">
+							<div class="flex-1">
+								<InputField bind:value={createName} placeholder="Card name..." size="sm" onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && startCreateEditor()} />
+							</div>
+							<Btn small onclick={handleGenerateNames} disabled={generatingNames}>
+								{generatingNames ? 'Generating...' : 'Generate'}
+							</Btn>
+						</div>
+					</FormField>
+					<FormField label="Hints (optional)" size="xs">
+						<InputField bind:value={nameHints} placeholder="e.g., a mysterious merchant from the east" size="sm" />
 					</FormField>
 				</div>
+
+				{#if nameSuggestions.length > 0}
+					<div>
+						<p class="text-[11px] text-text-dim mb-1.5">Suggestions (click to use):</p>
+						<div class="flex flex-wrap gap-1.5">
+							{#each nameSuggestions as suggestion}
+								<button
+									class="px-2.5 py-1 rounded-lg text-xs border border-border-custom bg-bg-subtle
+										text-text hover:bg-accent/10 hover:border-accent/30 hover:text-accent transition-all"
+									onclick={() => { createName = suggestion; }}
+								>{suggestion}</button>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
 				<div class="flex gap-2">
 					<Btn primary small onclick={startCreateEditor}>Next</Btn>
 					<Btn small onclick={cancelEdit}>Cancel</Btn>
@@ -286,8 +357,8 @@
 		{:else if mode === 'view' && selectedCard}
 			{@const card = selectedCard}
 			<!-- ── VIEW MODE ── -->
-			<div class="bg-surface border border-border-custom rounded-[10px]">
-				<div class="p-5 px-[22px]">
+			<div class="bg-surface border border-border-custom rounded-[10px] flex flex-col" style="max-height: calc(100vh - 120px)">
+				<div class="p-5 px-[22px] shrink-0">
 					<!-- Header -->
 					<div class="mb-3">
 						<PageHeader title={card.name} size="md">
@@ -301,21 +372,31 @@
 								{/if}
 							{/snippet}
 							{#snippet actions()}
+								{#if confirmDelete}
+									<span class="text-xs text-error mr-1">Delete?</span>
+									<Btn small onclick={handleDelete} disabled={deleting}>
+										{deleting ? 'Deleting...' : 'Yes'}
+									</Btn>
+									<Btn small onclick={() => { confirmDelete = false; }}>No</Btn>
+								{:else}
+									<Btn small onclick={() => { confirmDelete = true; }}>Delete</Btn>
+								{/if}
 								<Btn small onclick={enterEditMode}>Edit</Btn>
 							{/snippet}
 						</PageHeader>
 					</div>
 
-					<!-- Summary / Content (body only, frontmatter stripped) -->
-					{#if stripFrontmatter(selectedCard.content)}
-						<p class="text-[13px] text-text-dim leading-relaxed mb-4 whitespace-pre-wrap">{stripFrontmatter(selectedCard.content)}</p>
-					{/if}
-
-					<!-- Frontmatter fields -->
+					<!-- Collapsible frontmatter details -->
 					{#if Object.keys(selectedCard.frontmatter).length > 0}
-						<div class="mb-4">
-							<div class="mb-1"><SectionLabel>Details</SectionLabel></div>
-							<div class="space-y-0.5">
+						<button
+							class="flex items-center gap-1.5 mb-3 text-xs text-text-dim hover:text-text transition-colors cursor-pointer bg-transparent border-none p-0"
+							onclick={() => (detailsOpen = !detailsOpen)}
+						>
+							<span class="text-[10px] transition-transform inline-block" style="transform: rotate({detailsOpen ? '90deg' : '0deg'})">&#9654;</span>
+							<SectionLabel>Details</SectionLabel>
+						</button>
+						{#if detailsOpen}
+							<div class="mb-3 pl-4 py-2 border-l-2 border-border-custom/60 space-y-0.5">
 								{#each Object.entries(selectedCard.frontmatter) as [key, val]}
 									<div class="flex gap-2 text-xs">
 										<span class="text-text-dim shrink-0 w-32 truncate">{key}</span>
@@ -323,7 +404,15 @@
 									</div>
 								{/each}
 							</div>
-						</div>
+						{/if}
+					{/if}
+				</div>
+
+				<!-- Scrollable body + connections -->
+				<div class="flex-1 overflow-y-auto px-[22px] pb-5 min-h-0">
+					<!-- Body content -->
+					{#if selectedCard.body}
+						<p class="text-[13px] text-text-dim leading-relaxed mb-4 whitespace-pre-wrap">{selectedCard.body}</p>
 					{/if}
 
 					<Divider />

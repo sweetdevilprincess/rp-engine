@@ -3,6 +3,7 @@ export interface BranchCreate {
   rp_folder: string;
   description?: string;
   branch_from?: string;
+  branch_point_exchange?: number;
 }
 export interface BranchInfo {
   name: string;
@@ -12,6 +13,7 @@ export interface BranchInfo {
   branch_point_exchange: number | null;
   description: string | null;
   is_active: boolean;
+  is_archived: boolean;
   created_at: string | null;
   exchange_count: number;
 }

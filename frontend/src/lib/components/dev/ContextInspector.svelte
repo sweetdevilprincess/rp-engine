@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { getSceneContext } from '$lib/api/context';
 	import { addToast } from '$lib/stores/ui';
+	import { MODIFIER_DESCRIPTIONS } from '$lib/constants/archetypes';
+	import { modifierColors } from '$lib/utils/colors';
+	import Tooltip from '$lib/components/ui/Tooltip.svelte';
 	import type { ContextResponse } from '$lib/types';
 
 	let message = '';
@@ -89,7 +92,7 @@
 		{/if}
 
 		<button
-			class="w-full bg-accent hover:bg-accent-hover text-white text-sm font-medium py-2 px-4 rounded-md
+			class="w-full bg-accent hover:bg-accent-hover text-text-on-accent text-sm font-medium py-2 px-4 rounded-md
 				transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 			onclick={inspect}
 			disabled={loading || !message.trim()}
@@ -198,7 +201,10 @@
 									<div class="flex flex-wrap gap-1">
 										<span class="text-xs text-text-dim">Modifiers:</span>
 										{#each npc.behavioral_modifiers as m}
-											<span class="text-xs bg-bg-subtle text-text-dim px-1.5 py-0.5 rounded">{m}</span>
+											{@const mc = modifierColors(m)}
+											<Tooltip text={MODIFIER_DESCRIPTIONS[m] ?? m}>
+												<span class="text-xs px-1.5 py-0.5 rounded" style="background: {mc.bg}; color: {mc.text};">{m}</span>
+											</Tooltip>
 										{/each}
 									</div>
 								{/if}

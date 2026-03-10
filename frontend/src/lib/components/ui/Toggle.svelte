@@ -60,7 +60,7 @@
 		width: 16px;
 		height: 16px;
 		border-radius: 50%;
-		background: #fff;
+		background: var(--color-surface-raised);
 		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 		transition: left 0.2s ease;
 	}

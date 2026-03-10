@@ -9,18 +9,20 @@ from __future__ import annotations
 import logging
 import re
 import time
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
 from rp_engine.database import PRIORITY_REINDEX, Database
-from rp_engine.utils.text import hash_content
-from rp_engine.utils.frontmatter import parse_file, parse_frontmatter
+from rp_engine.utils.frontmatter import parse_frontmatter
 from rp_engine.utils.normalization import (
     file_to_key,
     id_to_key,
     normalize_key,
     strip_parenthetical,
 )
+from rp_engine.utils.text import hash_content
+from rp_engine.utils.trust import trust_stage
 
 logger = logging.getLogger(__name__)
 
@@ -102,10 +104,11 @@ CONNECTION_RULES: list[tuple[str, str, str]] = [
 class CardIndexer:
     """Indexes story card .md files into SQLite for fast entity/connection lookup."""
 
-    def __init__(self, db: Database, vault_root: Path, vector_search=None) -> None:
+    def __init__(self, db: Database, vault_root: Path, vector_search=None, response_analyzer=None) -> None:
         self.db = db
         self.vault_root = vault_root
         self.vector_search = vector_search
+        self.response_analyzer = response_analyzer  # Late-bound for alias cache invalidation
 
     # ------------------------------------------------------------------
     # Public API
@@ -244,6 +247,15 @@ class CardIndexer:
                 await future
                 connection_count += 1
 
+        # Seed trust_baselines from card trust data (initial_relationships, npc_trust_levels)
+        trust_seeded = 0
+        for _eid, data in entities.items():
+            if data["card_type"] in ("character", "npc"):
+                trust_seeded += await self._seed_trust_baselines(
+                    data["name"], data["frontmatter"], rp_folder,
+                    entity_keys, alias_map,
+                )
+
         # Vector chunking — populate SQLite vectors table for search
         chunk_count = 0
         if self.vector_search:
@@ -261,10 +273,14 @@ class CardIndexer:
                     except Exception as e:
                         logger.warning("Vector indexing failed for %s: %s", data["name"], e)
 
+        # Invalidate alias cache in response analyzer so stale aliases are rebuilt
+        if self.response_analyzer:
+            self.response_analyzer.invalidate_alias_cache(rp_folder)
+
         elapsed = (time.monotonic() - start) * 1000
         logger.info(
-            "Full index of %s: %d entities, %d connections, %d aliases, %d keywords, %d chunks (%.0fms)",
-            rp_folder, len(entities), connection_count, alias_count, keyword_count, chunk_count, elapsed,
+            "Full index of %s: %d entities, %d connections, %d aliases, %d keywords, %d chunks, %d trust baselines (%.0fms)",
+            rp_folder, len(entities), connection_count, alias_count, keyword_count, chunk_count, trust_seeded, elapsed,
         )
         return {
             "entities": len(entities),
@@ -272,6 +288,7 @@ class CardIndexer:
             "aliases": alias_count,
             "keywords": keyword_count,
             "chunks": chunk_count,
+            "trust_baselines_seeded": trust_seeded,
             "duration_ms": elapsed,
         }
 
@@ -361,6 +378,12 @@ class CardIndexer:
             )
             await future
 
+        # Seed trust_baselines from card trust data
+        if card_type in ("character", "npc"):
+            await self._seed_trust_baselines(
+                name, frontmatter, rp_folder, entity_keys, alias_map_db,
+            )
+
         # Vector chunking for this file (body only, no frontmatter)
         if self.vector_search:
             try:
@@ -372,6 +395,10 @@ class CardIndexer:
                 )
             except Exception as e:
                 logger.warning("Vector indexing failed for %s: %s", rel_path, e)
+
+        # Invalidate alias cache for this RP folder
+        if self.response_analyzer:
+            self.response_analyzer.invalidate_alias_cache(rp_folder)
 
         logger.info("Indexed file: %s → %s", rel_path, entity_id)
         return True
@@ -597,6 +624,103 @@ class CardIndexer:
                     "role": None,
                 })
         return conns
+
+    async def _seed_trust_baselines(
+        self, name: str, frontmatter: dict, rp_folder: str,
+        entity_keys: dict, alias_map: dict,
+    ) -> int:
+        """Seed trust_baselines from card's initial_relationships and npc_trust_levels.
+
+        Only seeds on branch='main'. Uses INSERT OR IGNORE so existing baselines
+        (from gameplay or prior indexing) are not overwritten.
+        On re-index, updates card-sourced baselines only if no modifications exist.
+
+        Returns count of baselines seeded/updated.
+        """
+        from datetime import datetime
+
+        now = datetime.now(UTC).isoformat()
+        count = 0
+
+        pairs: list[tuple[str, str, int]] = []  # (char_a, char_b, score)
+
+        # Extract from initial_relationships
+        init_rels = frontmatter.get("initial_relationships")
+        if isinstance(init_rels, list):
+            for item in init_rels:
+                if isinstance(item, dict):
+                    trust_val = item.get("trust")
+                    target_ref = item.get("target") or item.get("name", "")
+                    if trust_val is not None and target_ref:
+                        # Resolve to entity_id, then get display name
+                        resolved_eid = self._resolve_ref(
+                            str(target_ref), entity_keys, alias_map, rp_folder
+                        )
+                        target_display = await self._entity_display_name(
+                            resolved_eid, str(target_ref)
+                        )
+                        pairs.append((name, target_display, int(trust_val)))
+
+        # Extract from npc_trust_levels
+        trust_levels = frontmatter.get("npc_trust_levels")
+        if isinstance(trust_levels, dict):
+            for target_name, score in trust_levels.items():
+                if isinstance(score, (int, float)):
+                    # Resolve to get canonical display name
+                    resolved_eid = self._resolve_ref(
+                        str(target_name), entity_keys, alias_map, rp_folder
+                    )
+                    target_display = await self._entity_display_name(
+                        resolved_eid, str(target_name)
+                    )
+                    pairs.append((name, target_display, int(score)))
+
+        # Seed baselines on main branch
+        for char_a, char_b, score in pairs:
+            # Try INSERT OR IGNORE first (new baseline)
+            future = await self.db.enqueue_write(
+                """INSERT OR IGNORE INTO trust_baselines
+                   (character_a, character_b, rp_folder, branch,
+                    baseline_score, baseline_stage, source, created_at)
+                   VALUES (?, ?, ?, 'main', ?, ?, 'card', ?)""",
+                [char_a, char_b, rp_folder, score, trust_stage(score), now],
+                priority=PRIORITY_REINDEX,
+            )
+            await future
+
+            # On re-index: update card-sourced baselines if no modifications exist
+            future = await self.db.enqueue_write(
+                """UPDATE trust_baselines
+                   SET baseline_score = ?, baseline_stage = ?
+                   WHERE character_a = ? AND character_b = ?
+                     AND rp_folder = ? AND branch = 'main'
+                     AND source = 'card'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM trust_modifications
+                       WHERE LOWER(character_a) = LOWER(trust_baselines.character_a)
+                         AND LOWER(character_b) = LOWER(trust_baselines.character_b)
+                         AND rp_folder = trust_baselines.rp_folder
+                         AND branch = trust_baselines.branch
+                     )""",
+                [score, trust_stage(score), char_a, char_b, rp_folder],
+                priority=PRIORITY_REINDEX,
+            )
+            await future
+            count += 1
+
+        return count
+
+    async def _entity_display_name(self, entity_id: str | None, fallback: str) -> str:
+        """Get the display name for an entity_id by querying story_cards.
+
+        Falls back to the reference string if entity not found.
+        """
+        if not entity_id:
+            return fallback
+        row = await self.db.fetch_one(
+            "SELECT name FROM story_cards WHERE id = ?", [entity_id]
+        )
+        return row["name"] if row else fallback
 
     def _parse_who_remembers(
         self, entity_id: str, value: Any,

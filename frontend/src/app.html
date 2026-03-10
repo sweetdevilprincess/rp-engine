@@ -6,6 +6,14 @@
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
+		<script>
+			try {
+				const p = JSON.parse(localStorage.getItem('rp-appearance') || '{}');
+				if (p.theme && p.theme !== 'sage') document.documentElement.dataset.theme = p.theme;
+				const fs = { small: '13px', medium: '14px', large: '16px' };
+				if (p.fontSize && fs[p.fontSize]) document.documentElement.style.fontSize = fs[p.fontSize];
+			} catch {}
+		</script>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>

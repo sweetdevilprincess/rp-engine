@@ -17,6 +17,7 @@ from rp_engine.models.state import (
     EventDetail,
     EventListResponse,
     RelationshipDetail,
+    RelationshipGraphResponse,
     RelationshipListResponse,
     RelationshipUpdate,
     SceneUpdate,
@@ -43,6 +44,22 @@ async def get_full_state(
 ):
     """Full state snapshot for an RP/branch."""
     return await state_manager.get_full_state(rp_folder, branch)
+
+
+# ---------------------------------------------------------------------------
+# Relationship Graph
+# ---------------------------------------------------------------------------
+
+
+@router.get("/relationship-graph", response_model=RelationshipGraphResponse)
+async def get_relationship_graph(
+    rp_folder: str = Query(...),
+    branch: str = Query("main"),
+    pov_character: str | None = Query(None),
+    state_manager: StateManager = Depends(get_state_manager),
+):
+    """Get a full relationship graph with character nodes and trust edges."""
+    return await state_manager.get_relationship_graph(rp_folder, branch, pov_character)
 
 
 # ---------------------------------------------------------------------------

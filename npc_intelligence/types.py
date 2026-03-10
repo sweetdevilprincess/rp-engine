@@ -1,7 +1,5 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
-
 # Re-export shared types from base package
 from pattern_intelligence.types import (
     CorrectionPair,

@@ -54,6 +54,7 @@ export interface StoryCardDetail {
   importance: string | null;
   frontmatter: Record<string, unknown>;
   content: string;
+  body: string;
   connections: EntityConnection[];
 }
 export interface SuggestCardResponse {

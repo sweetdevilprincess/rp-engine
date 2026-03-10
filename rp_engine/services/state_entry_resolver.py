@@ -9,6 +9,9 @@ Each table follows the same pattern:
 - "Latest" = MAX(exchange_number) per entity on a branch
 - Rewind = DELETE WHERE exchange_number > target
 - Branch snapshot = copy latest entries from source to target branch
+
+Module-level convenience functions at the bottom provide typed shortcuts
+for the most common inline queries across the codebase.
 """
 
 from __future__ import annotations
@@ -217,3 +220,84 @@ class StateEntryResolver:
             await future
 
         return len(rows)
+
+
+# ===================================================================
+# Module-level convenience functions
+# ===================================================================
+# These replace common inline CoW queries scattered across services.
+# Import directly: from rp_engine.services.state_entry_resolver import latest_scene_state
+
+
+async def latest_scene_state(
+    db: Database, rp_folder: str, branch: str
+) -> dict | None:
+    """Get the latest scene_state_entries row for a branch."""
+    row = await db.fetch_one(
+        """SELECT * FROM scene_state_entries
+           WHERE rp_folder = ? AND branch = ?
+           ORDER BY exchange_number DESC LIMIT 1""",
+        [rp_folder, branch],
+    )
+    return dict(row) if row else None
+
+
+async def latest_character_state(
+    db: Database, rp_folder: str, branch: str, card_id: str
+) -> dict | None:
+    """Get the latest character_state_entries row for a specific card_id."""
+    row = await db.fetch_one(
+        """SELECT * FROM character_state_entries
+           WHERE card_id = ? AND rp_folder = ? AND branch = ?
+           ORDER BY exchange_number DESC LIMIT 1""",
+        [card_id, rp_folder, branch],
+    )
+    return dict(row) if row else None
+
+
+async def latest_character_states_batch(
+    db: Database, rp_folder: str, branch: str, card_ids: list[str]
+) -> dict[str, dict]:
+    """Batch-fetch latest character_state_entries for multiple card_ids.
+
+    Returns {card_id: row_dict}.
+    """
+    if not card_ids:
+        return {}
+    placeholders = ",".join("?" for _ in card_ids)
+    rows = await db.fetch_all(
+        f"""SELECT cse.* FROM character_state_entries cse
+            INNER JOIN (
+                SELECT card_id, MAX(exchange_number) as max_ex
+                FROM character_state_entries
+                WHERE rp_folder = ? AND branch = ? AND card_id IN ({placeholders})
+                GROUP BY card_id
+            ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
+            WHERE cse.rp_folder = ? AND cse.branch = ?""",
+        [rp_folder, branch] + card_ids + [rp_folder, branch],
+    )
+    return {row["card_id"]: dict(row) for row in rows}
+
+
+async def latest_exchange_number(
+    db: Database, rp_folder: str, branch: str
+) -> int:
+    """Get MAX(exchange_number) from exchanges for a branch."""
+    val = await db.fetch_val(
+        "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
+        [rp_folder, branch],
+    )
+    return val or 0
+
+
+async def latest_exchange(
+    db: Database, rp_folder: str, branch: str
+) -> dict | None:
+    """Get the latest exchange row for a branch."""
+    row = await db.fetch_one(
+        """SELECT * FROM exchanges
+           WHERE rp_folder = ? AND branch = ?
+           ORDER BY exchange_number DESC LIMIT 1""",
+        [rp_folder, branch],
+    )
+    return dict(row) if row else None

@@ -8,15 +8,17 @@ import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
-
-from fastapi import BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from rp_engine.database import PRIORITY_EXCHANGE, Database
-from rp_engine.dependencies import get_branch_manager, get_db, get_recap_builder, get_summary_builder
-from rp_engine.services.branch_manager import BranchManager
-from rp_engine.services.summary_builder import SummaryBuilder
-from rp_engine.services.recap_builder import RecapBuilder
+from rp_engine.dependencies import (
+    get_auto_save_manager,
+    get_branch_manager,
+    get_db,
+    get_diagnostic_logger,
+    get_recap_builder,
+    get_summary_builder,
+)
 from rp_engine.models.session import (
     NewEntity,
     PlotThreadStatus,
@@ -27,9 +29,17 @@ from rp_engine.models.session import (
     SessionEndSummary,
     SessionResponse,
     SessionSummary,
+    SessionTimelineEntry,
+    SessionTimelineResponse,
     TrustChange,
     UpdateSessionBody,
 )
+from rp_engine.services.auto_save import AutoSaveManager
+from rp_engine.services.branch_manager import BranchManager
+from rp_engine.services.diagnostic_logger import DiagnosticLogger
+from rp_engine.services.recap_builder import RecapBuilder
+from rp_engine.services.summary_builder import SummaryBuilder
+from rp_engine.utils.json_helpers import safe_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +47,7 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 def _session_from_row(row: dict) -> SessionResponse:
-    metadata = None
-    if row.get("metadata"):
-        try:
-            metadata = json.loads(row["metadata"])
-        except (json.JSONDecodeError, TypeError):
-            pass
+    metadata = safe_parse_json(row.get("metadata")) or None
     return SessionResponse(
         id=row["id"],
         rp_folder=row["rp_folder"],
@@ -58,6 +63,7 @@ async def create_session(
     body: SessionCreate,
     db: Database = Depends(get_db),
     branch_manager: BranchManager = Depends(get_branch_manager),
+    diag: DiagnosticLogger = Depends(get_diagnostic_logger),
 ):
     """Start a new RP session."""
     # Auto-create "main" branch if needed
@@ -75,6 +81,17 @@ async def create_session(
     )
     await future
 
+    if diag:
+        diag.log(
+            category="session",
+            event="session_started",
+            data={
+                "session_id": session_id,
+                "rp_folder": body.rp_folder,
+                "branch": body.branch,
+            },
+        )
+
     return SessionResponse(
         id=session_id,
         rp_folder=body.rp_folder,
@@ -83,14 +100,44 @@ async def create_session(
     )
 
 
+@router.get("", response_model=list[SessionResponse])
+async def list_sessions(
+    rp_folder: str | None = None,
+    branch: str | None = None,
+    db: Database = Depends(get_db),
+):
+    """List sessions, optionally filtered by rp_folder and/or branch."""
+    query = "SELECT * FROM sessions"
+    conditions = []
+    params_list: list = []
+    if rp_folder:
+        conditions.append("rp_folder = ?")
+        params_list.append(rp_folder)
+    if branch:
+        conditions.append("branch = ?")
+        params_list.append(branch)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY started_at DESC"
+    rows = await db.fetch_all(query, params_list)
+    return [_session_from_row(r) for r in rows]
+
+
 @router.get("/active", response_model=SessionResponse)
-async def get_active_session(db: Database = Depends(get_db)):
-    """Get the most recent active (un-ended) session."""
+async def get_active_session(
+    rp_folder: str = Query(...),
+    branch: str = Query("main"),
+    db: Database = Depends(get_db),
+):
+    """Get the most recent active (un-ended) session for a given RP/branch."""
     row = await db.fetch_one(
-        "SELECT * FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1"
+        """SELECT * FROM sessions WHERE ended_at IS NULL
+           AND rp_folder = ? AND branch = ?
+           ORDER BY started_at DESC LIMIT 1""",
+        [rp_folder, branch],
     )
     if not row:
-        raise HTTPException(404, detail="No active session")
+        raise HTTPException(404, detail=f"No active session for {rp_folder}/{branch}")
     return _session_from_row(row)
 
 
@@ -122,6 +169,8 @@ async def end_session(
     background_tasks: BackgroundTasks,
     db: Database = Depends(get_db),
     summary_builder: SummaryBuilder = Depends(get_summary_builder),
+    diag: DiagnosticLogger = Depends(get_diagnostic_logger),
+    auto_save_manager: AutoSaveManager | None = Depends(get_auto_save_manager),
 ):
     """End a session. Returns accumulated summary data."""
     row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", [session_id])
@@ -266,7 +315,6 @@ async def end_session(
         significant_events=events,
         trust_changes=trust_changes,
         new_entities=new_entities,
-        relationship_arcs=[],
         plot_thread_status=plot_thread_status,
         scene_progression=scene_progression,
     )
@@ -280,7 +328,237 @@ async def end_session(
             branch,
         )
 
+    if diag:
+        diag.log(
+            category="session",
+            event="session_ended",
+            data={
+                "session_id": session_id,
+                "rp_folder": rp_folder,
+                "branch": branch,
+                "started_at": row["started_at"],
+                "ended_at": now,
+                "event_count": len(events),
+                "trust_change_count": len(trust_changes),
+                "new_entity_count": len(new_entities),
+            },
+        )
+        # Auto-report on session end if configured
+        if diag.config.auto_report.enabled and diag.config.auto_report.on_session_end:
+            _report_task = asyncio.create_task(diag.send_report())  # noqa: RUF006
+
+    # Clean up auto-save tracker for this session
+    if auto_save_manager:
+        auto_save_manager.cleanup_session(session_id)
+
     return SessionEndResponse(session=session_resp, summary=summary)
+
+
+@router.get("/{session_id}/timeline", response_model=SessionTimelineResponse)
+async def get_session_timeline(
+    session_id: str,
+    db: Database = Depends(get_db),
+):
+    """Get a unified timeline of all state changes during a session."""
+    row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", [session_id])
+    if not row:
+        raise HTTPException(404, detail=f"Session {session_id} not found")
+
+    rp_folder = row["rp_folder"]
+    branch = row["branch"]
+
+    # Get exchange range for this session
+    range_row = await db.fetch_one(
+        "SELECT MIN(exchange_number) as min_ex, MAX(exchange_number) as max_ex "
+        "FROM exchanges WHERE session_id = ?",
+        [session_id],
+    )
+    min_ex = range_row["min_ex"] if range_row and range_row["min_ex"] is not None else 0
+    max_ex = range_row["max_ex"] if range_row and range_row["max_ex"] is not None else 0
+
+    if min_ex == 0 and max_ex == 0:
+        return SessionTimelineResponse(
+            session_id=session_id,
+            branch=branch,
+            exchange_range=(0, 0),
+            entries=[],
+            entry_counts={},
+        )
+
+    # Query all 6 tables in parallel, filtered by rp_folder + branch + exchange range
+    (event_rows, trust_rows, thread_rows, char_rows, scene_rows, warning_rows) = await asyncio.gather(
+        db.fetch_all(
+            """SELECT e.event, e.characters, e.significance, e.in_story_timestamp, e.created_at,
+                      ex.exchange_number
+               FROM events e
+               JOIN exchanges ex ON e.exchange_id = ex.id
+               WHERE ex.session_id = ?
+               ORDER BY ex.exchange_number""",
+            [session_id],
+        ),
+        db.fetch_all(
+            """SELECT tm.character_a, tm.character_b, tm.change, tm.reason,
+                      tm.created_at, tm.exchange_number
+               FROM trust_modifications tm
+               WHERE tm.rp_folder = ? AND tm.branch = ?
+                 AND tm.exchange_number BETWEEN ? AND ?
+               ORDER BY tm.exchange_number""",
+            [rp_folder, branch, min_ex, max_ex],
+        ),
+        db.fetch_all(
+            """SELECT tce.thread_id, tce.exchange_number, tce.counter_value, tce.created_at,
+                      pt.name as thread_name
+               FROM thread_counter_entries tce
+               JOIN plot_threads pt ON tce.thread_id = pt.id AND tce.rp_folder = pt.rp_folder
+               WHERE tce.rp_folder = ? AND tce.branch = ?
+                 AND tce.exchange_number BETWEEN ? AND ?
+               ORDER BY tce.exchange_number""",
+            [rp_folder, branch, min_ex, max_ex],
+        ),
+        db.fetch_all(
+            """SELECT cse.card_id, cse.exchange_number, cse.location, cse.emotional_state,
+                      cse.conditions, cse.created_at, sc.name as character_name
+               FROM character_state_entries cse
+               JOIN story_cards sc ON cse.card_id = sc.id
+               WHERE cse.rp_folder = ? AND cse.branch = ?
+                 AND cse.exchange_number BETWEEN ? AND ?
+               ORDER BY cse.exchange_number""",
+            [rp_folder, branch, min_ex, max_ex],
+        ),
+        db.fetch_all(
+            """SELECT exchange_number, location, time_of_day, mood,
+                      in_story_timestamp, created_at
+               FROM scene_state_entries
+               WHERE rp_folder = ? AND branch = ?
+                 AND exchange_number BETWEEN ? AND ?
+               ORDER BY exchange_number""",
+            [rp_folder, branch, min_ex, max_ex],
+        ),
+        db.fetch_all(
+            """SELECT entity_name, category, current_claim, current_exchange,
+                      past_claim, past_exchange, severity, explanation, created_at
+               FROM continuity_warnings
+               WHERE rp_folder = ? AND branch = ?
+                 AND current_exchange BETWEEN ? AND ?
+               ORDER BY current_exchange""",
+            [rp_folder, branch, min_ex, max_ex],
+        ),
+    )
+
+    entries: list[SessionTimelineEntry] = []
+
+    # Events
+    for r in event_rows:
+        chars = safe_parse_json(r.get("characters")) or []
+        if isinstance(chars, str):
+            chars = [chars]
+        entries.append(SessionTimelineEntry(
+            type="event",
+            exchange_number=r["exchange_number"],
+            timestamp=r.get("created_at"),
+            title=r["event"],
+            detail={"significance": r.get("significance")},
+            characters=chars,
+        ))
+
+    # Trust changes
+    for r in trust_rows:
+        sign = "+" if r["change"] >= 0 else ""
+        entries.append(SessionTimelineEntry(
+            type="trust_change",
+            exchange_number=r["exchange_number"],
+            timestamp=r.get("created_at"),
+            title=f"{r['character_a']} → {r['character_b']}: {sign}{r['change']}",
+            detail={"reason": r.get("reason", ""), "change": r["change"]},
+            characters=[r["character_a"], r["character_b"]],
+        ))
+
+    # Thread updates
+    for r in thread_rows:
+        entries.append(SessionTimelineEntry(
+            type="thread_update",
+            exchange_number=r["exchange_number"],
+            timestamp=r.get("created_at"),
+            title=f"{r['thread_name']}: counter → {r['counter_value']}",
+            detail={"thread_id": r["thread_id"], "counter_value": r["counter_value"]},
+        ))
+
+    # Character state updates
+    for r in char_rows:
+        name = r.get("character_name", r["card_id"])
+        parts = []
+        if r.get("location"):
+            parts.append(f"location: {r['location']}")
+        if r.get("emotional_state"):
+            parts.append(f"mood: {r['emotional_state']}")
+        title = f"{name} — {', '.join(parts)}" if parts else f"{name} state updated"
+        entries.append(SessionTimelineEntry(
+            type="character_update",
+            exchange_number=r["exchange_number"],
+            timestamp=r.get("created_at"),
+            title=title,
+            detail={
+                "location": r.get("location"),
+                "emotional_state": r.get("emotional_state"),
+                "conditions": safe_parse_json(r.get("conditions")) or [],
+            },
+            characters=[name],
+        ))
+
+    # Scene changes
+    for r in scene_rows:
+        parts = []
+        if r.get("location"):
+            parts.append(r["location"])
+        if r.get("time_of_day"):
+            parts.append(r["time_of_day"])
+        if r.get("mood"):
+            parts.append(r["mood"])
+        entries.append(SessionTimelineEntry(
+            type="scene_change",
+            exchange_number=r["exchange_number"],
+            timestamp=r.get("created_at"),
+            title=" · ".join(parts) if parts else "Scene updated",
+            detail={
+                "location": r.get("location"),
+                "time_of_day": r.get("time_of_day"),
+                "mood": r.get("mood"),
+                "in_story_timestamp": r.get("in_story_timestamp"),
+            },
+        ))
+
+    # Continuity warnings
+    for r in warning_rows:
+        entries.append(SessionTimelineEntry(
+            type="continuity_warning",
+            exchange_number=r["current_exchange"],
+            timestamp=r.get("created_at"),
+            title=f"{r['entity_name']}: {r['category']}",
+            detail={
+                "current_claim": r["current_claim"],
+                "past_claim": r["past_claim"],
+                "past_exchange": r["past_exchange"],
+                "severity": r.get("severity"),
+                "explanation": r.get("explanation"),
+            },
+            characters=[r["entity_name"]],
+        ))
+
+    # Sort by exchange_number then timestamp
+    entries.sort(key=lambda e: (e.exchange_number or 0, e.timestamp or ""))
+
+    # Count entries per type
+    entry_counts: dict[str, int] = {}
+    for e in entries:
+        entry_counts[e.type] = entry_counts.get(e.type, 0) + 1
+
+    return SessionTimelineResponse(
+        session_id=session_id,
+        branch=branch,
+        exchange_range=(min_ex, max_ex),
+        entries=entries,
+        entry_counts=entry_counts,
+    )
 
 
 @router.get("/{session_id}/summary", response_model=SessionSummary)

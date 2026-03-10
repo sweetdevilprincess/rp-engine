@@ -6,28 +6,22 @@ import logging
 
 from fastapi import APIRouter, Depends, Query
 
-logger = logging.getLogger(__name__)
-
 from rp_engine.database import Database
-from rp_engine.dependencies import get_db
+from rp_engine.dependencies import get_branch_manager, get_db
 from rp_engine.models.timeline import (
     DivergencePoint,
     TimelineBranch,
     TimelineExchange,
     TimelineResponse,
 )
+from rp_engine.services.branch_manager import BranchManager
+from rp_engine.utils.text import truncate_text
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/timeline", tags=["timeline"])
 
 SNIPPET_LENGTH = 150
-
-
-def _snippet(text: str | None, max_len: int = SNIPPET_LENGTH) -> str:
-    """Truncate text to a snippet."""
-    if not text:
-        return ""
-    text = text.strip().replace("\n", " ")
-    return text[:max_len] + "..." if len(text) > max_len else text
 
 
 @router.get("", response_model=TimelineResponse)
@@ -36,14 +30,12 @@ async def get_timeline(
     include_branches: str | None = Query(None, description="Comma-separated branch names"),
     snippet_length: int = Query(SNIPPET_LENGTH, ge=50, le=500),
     db: Database = Depends(get_db),
+    branch_manager: BranchManager = Depends(get_branch_manager),
 ):
     """Get a unified timeline view across branches."""
 
     # Get all branches for this RP
-    branch_rows = await db.fetch_all(
-        "SELECT * FROM branches WHERE rp_folder = ? ORDER BY created_at",
-        [rp_folder],
-    )
+    branch_rows = await branch_manager.get_all_branch_rows(rp_folder)
 
     # Filter to requested branches
     branch_filter = None
@@ -71,8 +63,8 @@ async def get_timeline(
         exchanges = [
             TimelineExchange(
                 exchange_number=ex["exchange_number"],
-                user_snippet=_snippet(ex.get("user_message"), snippet_length),
-                assistant_snippet=_snippet(ex.get("assistant_response"), snippet_length),
+                user_snippet=truncate_text(ex.get("user_message"), snippet_length),
+                assistant_snippet=truncate_text(ex.get("assistant_response"), snippet_length),
                 in_story_timestamp=ex.get("in_story_timestamp"),
                 created_at=ex.get("created_at"),
                 session_id=ex.get("session_id"),

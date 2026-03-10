@@ -2,14 +2,16 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { listCards, getCard, reindex, auditCards, getConnections } from '$lib/api/cards';
-	import { getFullState } from '$lib/api/state';
+	import { getFullState, updateScene, updateCharacter, adjustTrust, getRelationshipGraph } from '$lib/api/state';
 	import { listNPCs } from '$lib/api/npc';
 	import { addToast } from '$lib/stores/ui';
 	import { CARD_TYPES } from '$lib/types/enums';
 	import type { StoryCardSummary, StoryCardDetail, CardListResponse, AuditResponse, AuditGap, GraphData, GraphNode, GraphEdge } from '$lib/types';
-	import type { StateSnapshot, CharacterDetail, RelationshipDetail, EventDetail } from '$lib/types';
+	import type { StateSnapshot, CharacterDetail, RelationshipDetail, EventDetail, RelationshipGraphResponse, RelGraphNode } from '$lib/types';
 	import type { NPCListItem } from '$lib/types';
 	import ForceGraph from '$lib/components/ForceGraph.svelte';
+	import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
+	import TabBar from '$lib/components/ui/TabBar.svelte';
 	import { cardTypeColor, importanceColor, trustStageColor, significanceColor, cardTypeHex, GRAPH_FILTER_TYPES } from '$lib/utils/colors';
 	import { cardTypeColors, importanceColors, trustStageColors, significanceColors } from '$lib/utils/colors';
 	import Badge from '$lib/components/ui/Badge.svelte';
@@ -24,6 +26,8 @@
 	import NPCTrustList from '$lib/components/ui/NPCTrustList.svelte';
 	import BackButton from '$lib/components/ui/BackButton.svelte';
 	import RPSettings from '$lib/components/RPSettings.svelte';
+	import EditableField from '$lib/components/ui/EditableField.svelte';
+	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import { barStyle } from '$lib/utils/format';
 
 	// ── Tool nav ──
@@ -47,16 +51,108 @@
 	// ── Library tool ──
 	let cards = $state<StoryCardSummary[]>([]);
 	let librarySearch = $state('');
+	let debouncedSearch = $state('');
+	let searchDebounceTimer: ReturnType<typeof setTimeout>;
 	let libraryTypeFilter = $state('');
 	let selectedCard = $state<StoryCardDetail | null>(null);
 	let loadingCard = $state(false);
 	let libraryTab = $state<'detail' | 'gaps'>('detail');
+	let libraryDetailsOpen = $state(false);
 	let auditResult = $state<AuditResponse | null>(null);
 	let auditing = $state(false);
 
 	// ── State tool ──
 	let stateSnapshot = $state<StateSnapshot | null>(null);
 	let showAllEvents = $state(false);
+
+	// ── Trust editing ──
+	let trustEditRow = $state<string | null>(null); // "charA|charB" key
+	let trustChangeVal = $state(0);
+	let trustReason = $state('');
+	let trustDirection = $state('neutral');
+	let trustSaving = $state(false);
+	let showTrustConfirm = $state(false);
+	let pendingTrustSubmit = $state<(() => void) | null>(null);
+
+	async function submitTrustChange(charA: string, charB: string) {
+		if (!trustReason.trim() || trustChangeVal === 0) return;
+		trustSaving = true;
+		try {
+			await adjustTrust(charA, charB, {
+				trust_change: trustChangeVal,
+				reason: trustReason,
+				direction: trustDirection,
+			});
+			addToast(`Trust adjusted: ${charA} → ${charB} by ${trustChangeVal > 0 ? '+' : ''}${trustChangeVal}`, 'success');
+			trustEditRow = null;
+			trustChangeVal = 0;
+			trustReason = '';
+			trustDirection = 'neutral';
+			// Refresh state
+			stateSnapshot = await getFullState();
+		} catch (e: any) {
+			addToast(e.message ?? 'Failed to adjust trust', 'error');
+		} finally {
+			trustSaving = false;
+		}
+	}
+
+	function handleTrustSubmit(charA: string, charB: string) {
+		if (Math.abs(trustChangeVal) > 5) {
+			pendingTrustSubmit = () => submitTrustChange(charA, charB);
+			showTrustConfirm = true;
+		} else {
+			submitTrustChange(charA, charB);
+		}
+	}
+
+	async function handleSceneFieldSave(field: string, newValue: string) {
+		await updateScene({ [field]: newValue });
+		if (stateSnapshot) {
+			stateSnapshot = { ...stateSnapshot, scene: { ...stateSnapshot.scene, [field]: newValue } };
+		}
+	}
+
+	async function handleCharFieldSave(name: string, field: string, newValue: string) {
+		await updateCharacter(name, { [field]: newValue });
+		if (stateSnapshot) {
+			const chars = { ...stateSnapshot.characters };
+			if (chars[name]) {
+				chars[name] = { ...chars[name], [field]: newValue };
+			}
+			stateSnapshot = { ...stateSnapshot, characters: chars };
+		}
+	}
+
+	async function removeCondition(name: string, condition: string) {
+		const char = stateSnapshot?.characters[name];
+		if (!char) return;
+		const newConditions = char.conditions.filter(c => c !== condition);
+		await updateCharacter(name, { conditions: newConditions });
+		if (stateSnapshot) {
+			const chars = { ...stateSnapshot.characters };
+			chars[name] = { ...chars[name], conditions: newConditions };
+			stateSnapshot = { ...stateSnapshot, characters: chars };
+		}
+	}
+
+	let addConditionName = $state('');
+	let addConditionValue = $state('');
+
+	async function addCondition(name: string) {
+		if (!addConditionValue.trim()) return;
+		const char = stateSnapshot?.characters[name];
+		if (!char) return;
+		const newConditions = [...char.conditions, addConditionValue.trim()];
+		await updateCharacter(name, { conditions: newConditions });
+		if (stateSnapshot) {
+			const chars = { ...stateSnapshot.characters };
+			chars[name] = { ...chars[name], conditions: newConditions };
+			stateSnapshot = { ...stateSnapshot, characters: chars };
+		}
+		addConditionValue = '';
+		addConditionName = '';
+	}
 
 	// ── Trust tool ──
 	let npcs = $state<NPCListItem[]>([]);
@@ -70,6 +166,24 @@
 	let graphSelectedNode = $state<GraphNode | null>(null);
 	let graphSelectedCard = $state<StoryCardDetail | null>(null);
 	let loadingGraphCard = $state(false);
+
+	// ── NPC Relationship Graph ──
+	let graphTab = $state<'connections' | 'relationships'>('connections');
+	let relGraphData = $state<RelationshipGraphResponse | null>(null);
+	let relGraphLoading = $state(false);
+	let relGraphSelectedNode = $state<RelGraphNode | null>(null);
+
+	async function loadRelGraph() {
+		if (relGraphData) return;
+		relGraphLoading = true;
+		try {
+			relGraphData = await getRelationshipGraph();
+		} catch (e: any) {
+			addToast(e.message ?? 'Failed to load relationship graph', 'error');
+		} finally {
+			relGraphLoading = false;
+		}
+	}
 
 	let graphFilteredData = $derived.by((): GraphData | null => {
 		if (!graphData) return null;
@@ -208,12 +322,20 @@
 		}
 	}
 
+	// Debounce search input to avoid filtering/sorting on every keystroke
+	$effect(() => {
+		const val = librarySearch;
+		clearTimeout(searchDebounceTimer);
+		searchDebounceTimer = setTimeout(() => { debouncedSearch = val; }, 200);
+		return () => clearTimeout(searchDebounceTimer);
+	});
+
 	let filteredCards = $derived(
 		cards
 			.filter(c => {
 				if (libraryTypeFilter && c.card_type !== libraryTypeFilter) return false;
-				if (librarySearch.trim()) {
-					const q = librarySearch.toLowerCase();
+				if (debouncedSearch.trim()) {
+					const q = debouncedSearch.toLowerCase();
 					return c.name.toLowerCase().includes(q) || c.card_type.toLowerCase().includes(q) ||
 						(c.summary ?? '').toLowerCase().includes(q);
 				}
@@ -269,13 +391,15 @@
 		{#if activeTool === 'library'}
 			{#if selectedCard}
 				<!-- Detail view (replaces grid when a card is selected) -->
-				<div class="bg-surface border border-border-custom rounded-lg overflow-hidden">
-					<div class="flex items-center gap-2 px-4 py-2.5 border-b border-border-custom">
+				<div class="bg-surface border border-border-custom rounded-lg flex flex-col" style="max-height: calc(100vh - 180px)">
+					<div class="flex items-center gap-2 px-4 py-2.5 border-b border-border-custom shrink-0">
 						<BackButton label="Back to library" onclick={() => (selectedCard = null)} />
 					</div>
-					<div class="p-4 space-y-4">
+
+					<!-- Fixed header + collapsible details -->
+					<div class="px-4 pt-4 shrink-0">
 						<!-- Header -->
-						<div class="flex items-center gap-2">
+						<div class="flex items-center gap-2 mb-3">
 							<Badge color={cardTypeColors(selectedCard.card_type).text} bg={cardTypeColors(selectedCard.card_type).bg} dot={cardTypeColors(selectedCard.card_type).hex}>{selectedCard.card_type.replaceAll('_', ' ')}</Badge>
 							<h3 class="text-base font-semibold text-text font-serif">{selectedCard.name}</h3>
 							{#if selectedCard.importance}
@@ -284,31 +408,38 @@
 							{/if}
 						</div>
 
-						<!-- Content summary -->
-						{#if selectedCard.content}
-							<div class="text-sm text-text-dim leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto">
-								{selectedCard.content.slice(0, 800)}{selectedCard.content.length > 800 ? '...' : ''}
-							</div>
-						{/if}
-
-						<!-- Frontmatter -->
+						<!-- Collapsible frontmatter details -->
 						{#if Object.keys(selectedCard.frontmatter).length > 0}
-							<div>
-								<div class="mb-2"><SectionLabel>Frontmatter</SectionLabel></div>
-								<div class="grid grid-cols-2 gap-x-4 gap-y-1">
+							<button
+								class="flex items-center gap-1.5 mb-3 text-xs text-text-dim hover:text-text transition-colors cursor-pointer bg-transparent border-none p-0"
+								onclick={() => (libraryDetailsOpen = !libraryDetailsOpen)}
+							>
+								<span class="text-[10px] transition-transform inline-block" style="transform: rotate({libraryDetailsOpen ? '90deg' : '0deg'})">&#9654;</span>
+								<SectionLabel>Details</SectionLabel>
+							</button>
+							{#if libraryDetailsOpen}
+								<div class="mb-3 pl-4 py-2 border-l-2 border-border-custom/60 grid grid-cols-2 gap-x-4 gap-y-1">
 									{#each Object.entries(selectedCard.frontmatter) as [key, val]}
 										<div class="flex gap-2 text-xs py-0.5">
 											<span class="text-text-dim shrink-0">{key}</span>
-											<span class="text-text truncate">{typeof val === 'object' ? JSON.stringify(val) : String(val)}</span>
+											<span class="text-text break-all">{typeof val === 'object' ? JSON.stringify(val) : String(val)}</span>
 										</div>
 									{/each}
 								</div>
-							</div>
+							{/if}
+						{/if}
+					</div>
+
+					<!-- Scrollable body + connections -->
+					<div class="flex-1 overflow-y-auto px-4 pb-4 min-h-0">
+						<!-- Body content (frontmatter stripped) -->
+						{#if selectedCard.body}
+							<p class="text-[13px] text-text-dim leading-relaxed whitespace-pre-wrap mb-4">{selectedCard.body}</p>
 						{/if}
 
 						<!-- Connections -->
 						{#if selectedCard.connections.length > 0}
-							<div>
+							<div class="mt-3">
 								<div class="mb-2"><SectionLabel>Connections ({selectedCard.connections.length})</SectionLabel></div>
 								<div class="flex flex-wrap gap-1.5">
 									{#each selectedCard.connections as conn}
@@ -317,7 +448,7 @@
 								</div>
 							</div>
 						{:else}
-							<p class="text-xs text-warning">No connections (orphan card)</p>
+							<p class="text-xs text-warning mt-3">No connections (orphan card)</p>
 						{/if}
 					</div>
 				</div>
@@ -409,35 +540,84 @@
 					<!-- Scene card -->
 					<CardSection title="Scene" compact>
 						<div class="px-4 py-3 flex flex-col gap-[5px]">
-							{#each [['Location', stateSnapshot.scene.location], ['Time of Day', stateSnapshot.scene.time_of_day], ['Mood', stateSnapshot.scene.mood], ['Timestamp', stateSnapshot.scene.in_story_timestamp]] as [label, val]}
-								{#if val}
-									<InfoRow label={label ?? ''} value={val} />
-								{/if}
+							{#each [['location', 'Location', stateSnapshot.scene.location], ['time_of_day', 'Time of Day', stateSnapshot.scene.time_of_day], ['mood', 'Mood', stateSnapshot.scene.mood], ['in_story_timestamp', 'Timestamp', stateSnapshot.scene.in_story_timestamp]] as [field, label, val]}
+								<div class="flex items-start gap-2 text-xs">
+									<span class="text-text-dim shrink-0 w-24">{label}</span>
+									<div class="flex-1">
+										<EditableField
+											value={val ?? ''}
+											placeholder="Not set"
+											onSave={(v) => handleSceneFieldSave(field as string, v)}
+										/>
+									</div>
+								</div>
 							{/each}
-							{#if !stateSnapshot.scene.location && !stateSnapshot.scene.time_of_day && !stateSnapshot.scene.mood}
-								<div class="text-xs text-text-dim">No scene data yet.</div>
-							{/if}
 						</div>
 					</CardSection>
 
 					<!-- Characters card -->
 					<CardSection title="Characters" compact>
-						<div class="px-4 py-3 flex flex-col gap-2">
+						<div class="px-4 py-3 flex flex-col gap-3">
 							{#each [...playerChars, ...npcChars] as entry}
 								{@const name = entry[0]}
 								{@const char = entry[1]}
 								<div class="text-[13px]">
-									<span class="font-medium">{name}</span>
-									{#if char.emotional_state}
-										<span class="text-text-dim italic text-xs font-serif ml-1">{char.emotional_state}</span>
+									<span class="font-medium text-text">{name}</span>
+									{#if char.is_player_character}
+										<Badge color="var(--color-accent)" bg="var(--color-accent-soft)">PC</Badge>
 									{/if}
-									{#if char.conditions.length > 0}
-										<div class="flex gap-1 mt-0.5">
-											{#each char.conditions as cond}
-												<Badge>{cond}</Badge>
-											{/each}
+
+									<div class="mt-1 space-y-0.5">
+										<div class="flex items-start gap-2 text-xs">
+											<span class="text-text-dim shrink-0 w-20">Emotion</span>
+											<div class="flex-1">
+												<EditableField
+													value={char.emotional_state ?? ''}
+													placeholder="Not set"
+													onSave={(v) => handleCharFieldSave(name, 'emotional_state', v)}
+												/>
+											</div>
 										</div>
-									{/if}
+										<div class="flex items-start gap-2 text-xs">
+											<span class="text-text-dim shrink-0 w-20">Location</span>
+											<div class="flex-1">
+												<EditableField
+													value={char.location ?? ''}
+													placeholder="Not set"
+													onSave={(v) => handleCharFieldSave(name, 'location', v)}
+												/>
+											</div>
+										</div>
+									</div>
+
+									<!-- Conditions (chip-style with remove + add) -->
+									<div class="flex items-center gap-1 mt-1 flex-wrap">
+										{#each char.conditions as cond}
+											<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-surface2 rounded text-[10px] text-text-dim">
+												{cond}
+												<button
+													class="text-text-dim/60 hover:text-error transition-colors ml-0.5"
+													onclick={() => removeCondition(name, cond)}
+													title="Remove condition"
+												>&times;</button>
+											</span>
+										{/each}
+										{#if addConditionName === name}
+											<input
+												type="text"
+												bind:value={addConditionValue}
+												placeholder="New condition"
+												onkeydown={(e) => { if (e.key === 'Enter') addCondition(name); if (e.key === 'Escape') addConditionName = ''; }}
+												class="px-1.5 py-0.5 rounded border border-border-custom bg-bg-subtle text-[10px] text-text w-24
+													focus:outline-none focus:ring-1 focus:ring-accent"
+											/>
+										{:else}
+											<button
+												class="text-[10px] text-accent hover:text-accent-hover transition-colors"
+												onclick={() => { addConditionName = name; addConditionValue = ''; }}
+											>+ add</button>
+										{/if}
+									</div>
 								</div>
 							{/each}
 							{#if playerChars.length === 0 && npcChars.length === 0}
@@ -488,21 +668,65 @@
 										<th class="pb-1 pr-3">Character A</th>
 										<th class="pb-1 pr-3">Character B</th>
 										<th class="pb-1 pr-3">Trust</th>
-										<th class="pb-1">Stage</th>
+										<th class="pb-1 pr-3">Stage</th>
+										<th class="pb-1"></th>
 									</tr>
 								</thead>
 								<tbody>
 									{#each stateSnapshot.relationships as rel}
+										{@const rowKey = `${rel.character_a}|${rel.character_b}`}
 										<tr class="border-b border-border-custom/30">
 											<td class="py-1 pr-3 text-text">{rel.character_a}</td>
 											<td class="py-1 pr-3 text-text">{rel.character_b}</td>
 											<td class="py-1 pr-3 font-mono {rel.live_trust_score > 0 ? 'text-success' : rel.live_trust_score < 0 ? 'text-error' : 'text-text-dim'}">
 												{rel.live_trust_score > 0 ? '+' : ''}{rel.live_trust_score}
 											</td>
-											<td class="py-1">
+											<td class="py-1 pr-3">
 												<span class="px-1 py-0.5 rounded text-[10px]" style="{trustStageColor(rel.trust_stage)}">{rel.trust_stage}</span>
 											</td>
+											<td class="py-1">
+												<button
+													class="text-[10px] text-accent hover:text-accent-hover transition-colors"
+													onclick={() => { trustEditRow = trustEditRow === rowKey ? null : rowKey; trustChangeVal = 0; trustReason = ''; trustDirection = 'neutral'; }}
+												>{trustEditRow === rowKey ? 'Cancel' : 'Adjust'}</button>
+											</td>
 										</tr>
+										{#if trustEditRow === rowKey}
+											<tr>
+												<td colspan="5" class="pb-2 pt-1">
+													<div class="flex items-end gap-2 bg-surface2/40 rounded-lg p-2">
+														<div>
+															<label for="trust-change" class="text-[10px] text-text-dim block mb-0.5">Change</label>
+															<input id="trust-change" type="number" bind:value={trustChangeVal}
+																class="w-16 px-1.5 py-1 rounded border border-border-custom bg-bg-subtle text-xs text-text
+																	focus:outline-none focus:ring-1 focus:ring-accent" />
+														</div>
+														<div class="flex-1">
+															<label for="trust-reason" class="text-[10px] text-text-dim block mb-0.5">Reason</label>
+															<input id="trust-reason" type="text" bind:value={trustReason} placeholder="Why?"
+																class="w-full px-1.5 py-1 rounded border border-border-custom bg-bg-subtle text-xs text-text
+																	focus:outline-none focus:ring-1 focus:ring-accent" />
+														</div>
+														<div>
+															<label for="trust-direction" class="text-[10px] text-text-dim block mb-0.5">Direction</label>
+															<select id="trust-direction" bind:value={trustDirection}
+																class="px-1.5 py-1 rounded border border-border-custom bg-bg-subtle text-xs text-text
+																	focus:outline-none focus:ring-1 focus:ring-accent">
+																<option value="neutral">neutral</option>
+																<option value="a_to_b">A → B</option>
+																<option value="b_to_a">B → A</option>
+															</select>
+														</div>
+														<button
+															class="px-2.5 py-1 text-[11px] rounded bg-accent text-text-on-accent hover:bg-accent-hover transition-colors
+																disabled:opacity-50"
+															disabled={trustSaving || !trustReason.trim() || trustChangeVal === 0}
+															onclick={() => handleTrustSubmit(rel.character_a, rel.character_b)}
+														>{trustSaving ? '...' : 'Apply'}</button>
+													</div>
+												</td>
+											</tr>
+										{/if}
 									{/each}
 								</tbody>
 							</table>
@@ -511,6 +735,17 @@
 					</div>
 				{/if}
 			{/if}
+
+			<!-- Trust confirm dialog -->
+			<ConfirmDialog
+				bind:open={showTrustConfirm}
+				title="Large Trust Change"
+				message="You're applying a trust change greater than ±5. This is a significant shift. Are you sure?"
+				confirmLabel="Apply Change"
+				variant="danger"
+				onConfirm={() => { if (pendingTrustSubmit) pendingTrustSubmit(); pendingTrustSubmit = null; }}
+				onCancel={() => { pendingTrustSubmit = null; }}
+			/>
 
 		<!-- ═══════════ TRUST ═══════════ -->
 		{:else if activeTool === 'trust'}
@@ -525,19 +760,37 @@
 		{:else if activeTool === 'graph'}
 			<div class="relative bg-surface border border-border-custom rounded-[10px] overflow-hidden flex flex-col" style="height: calc(100vh - 180px)">
 
+				<!-- Tab bar -->
+				<div class="px-3 pt-2 border-b border-border-custom bg-surface z-20 relative">
+					<TabBar
+						items={[{id: 'connections', label: 'Card Connections'}, {id: 'relationships', label: 'NPC Relationships'}]}
+						bind:active={graphTab}
+						onselect={(id) => { if (id === 'relationships') loadRelGraph(); }}
+					/>
+				</div>
+
 				<!-- Graph canvas (full area) -->
 				<div class="flex-1 min-h-0">
-					{#if !graphFilteredData}
-						<div class="flex items-center justify-center h-full text-xs text-text-dim">Loading graph data...</div>
+					{#if graphTab === 'connections'}
+						{#if !graphFilteredData}
+							<div class="flex items-center justify-center h-full text-xs text-text-dim">Loading graph data...</div>
+						{:else}
+							<ForceGraph data={graphFilteredData} filter={graphFilter} onNodeClick={handleGraphNodeClick} />
+						{/if}
 					{:else}
-						{#key [...graphHiddenTypes].sort().join(',')}
-						<ForceGraph data={graphFilteredData} filter={graphFilter} onNodeClick={handleGraphNodeClick} />
-					{/key}
+						{#if relGraphLoading}
+							<div class="flex items-center justify-center h-full text-xs text-text-dim">Loading relationship graph...</div>
+						{:else if relGraphData}
+							<RelationshipGraph data={relGraphData} onNodeClick={(n) => { relGraphSelectedNode = n; }} />
+						{:else}
+							<div class="flex items-center justify-center h-full text-xs text-text-dim">No relationship data available.</div>
+						{/if}
 					{/if}
 				</div>
 
-				<!-- Floating filter panel (top-right) -->
-				<div class="absolute top-3 right-3 z-10">
+				<!-- Floating filter panel (top-right, connections tab only) -->
+				{#if graphTab === 'connections'}
+				<div class="absolute top-14 right-3 z-10">
 					{#if graphFiltersOpen}
 						<div class="bg-surface/95 backdrop-blur-sm border border-border-custom rounded-lg shadow-lg w-64">
 							<div class="flex items-center justify-between px-3 py-2 border-b border-border-custom">
@@ -583,9 +836,9 @@
 					{/if}
 				</div>
 
-				<!-- Floating card preview (top-left, on node click) -->
+				<!-- Floating card preview (top-left, on node click — connections tab only) -->
 				{#if graphSelectedNode}
-					<div class="absolute top-3 left-3 z-10 bg-surface/95 backdrop-blur-sm border border-border-custom rounded-[10px] shadow-lg w-72 max-h-[60%] overflow-y-auto">
+					<div class="absolute top-14 left-3 z-10 bg-surface/95 backdrop-blur-sm border border-border-custom rounded-[10px] shadow-lg w-72 max-h-[60%] overflow-y-auto">
 						<div class="flex items-center justify-between px-3 py-2 border-b border-border-custom">
 							<div class="flex items-center gap-2 min-w-0">
 								<span class="px-1.5 py-0.5 rounded text-[10px] leading-none" style="{cardTypeColor(graphSelectedNode.card_type)}">{graphSelectedNode.card_type}</span>
@@ -627,6 +880,51 @@
 								<p class="text-xs text-text-dim">Card not found.</p>
 							{/if}
 						</div>
+					</div>
+				{/if}
+				{/if}
+
+				<!-- NPC relationship node detail (relationships tab) -->
+				{#if graphTab === 'relationships' && relGraphSelectedNode}
+					<div class="absolute top-14 left-3 z-10 bg-surface/95 backdrop-blur-sm border border-border-custom rounded-[10px] shadow-lg w-64">
+						<div class="flex items-center justify-between px-3 py-2 border-b border-border-custom">
+							<span class="text-xs font-medium text-text">{relGraphSelectedNode.name}</span>
+							<button
+								class="text-xs text-text-dim hover:text-text transition-colors"
+								onclick={() => (relGraphSelectedNode = null)}
+							>Close</button>
+						</div>
+						<div class="p-3 space-y-1.5 text-xs">
+							{#if relGraphSelectedNode.is_player_character}
+								<Badge color="var(--color-accent)" bg="var(--color-accent-soft)">Player Character</Badge>
+							{/if}
+							{#if relGraphSelectedNode.importance}
+								<div class="flex gap-2"><span class="text-text-dim w-20">Importance</span><span class="text-text">{relGraphSelectedNode.importance}</span></div>
+							{/if}
+							{#if relGraphSelectedNode.primary_archetype}
+								<div class="flex gap-2"><span class="text-text-dim w-20">Archetype</span><span class="text-text">{relGraphSelectedNode.primary_archetype}</span></div>
+							{/if}
+							{#if relGraphSelectedNode.emotional_state}
+								<div class="flex gap-2"><span class="text-text-dim w-20">Emotion</span><span class="text-text italic font-serif">{relGraphSelectedNode.emotional_state}</span></div>
+							{/if}
+							{#if relGraphSelectedNode.location}
+								<div class="flex gap-2"><span class="text-text-dim w-20">Location</span><span class="text-text">{relGraphSelectedNode.location}</span></div>
+							{/if}
+							<div class="flex gap-2">
+								<span class="text-text-dim w-20">Trust</span>
+								<span class="font-mono {relGraphSelectedNode.trust_score > 0 ? 'text-success' : relGraphSelectedNode.trust_score < 0 ? 'text-error' : 'text-text-dim'}">
+									{relGraphSelectedNode.trust_score > 0 ? '+' : ''}{relGraphSelectedNode.trust_score}
+								</span>
+								<span class="px-1 py-0.5 rounded text-[10px]" style="{trustStageColor(relGraphSelectedNode.trust_stage)}">{relGraphSelectedNode.trust_stage}</span>
+							</div>
+						</div>
+					</div>
+				{/if}
+
+				<!-- NPC relationship metadata (relationships tab, top-right) -->
+				{#if graphTab === 'relationships' && relGraphData}
+					<div class="absolute top-14 right-3 z-10 bg-surface/95 backdrop-blur-sm border border-border-custom rounded-lg shadow-lg px-3 py-2">
+						<p class="text-[10px] text-text-dim">{relGraphData.metadata.total_npcs} NPCs · {relGraphData.metadata.total_edges} edges</p>
 					</div>
 				{/if}
 			</div>

@@ -17,6 +17,10 @@ from dataclasses import dataclass
 
 from rp_engine.database import Database
 from rp_engine.models.trigger import ConditionResult, TriggerTestResult
+from rp_engine.services.state_entry_resolver import (
+    latest_character_state,
+    latest_scene_state,
+)
 from rp_engine.utils.json_helpers import safe_parse_json_array
 
 logger = logging.getLogger(__name__)
@@ -334,12 +338,7 @@ class TriggerEvaluator:
             )
             if not card_id:
                 return False, f"Character '{name}' not found"
-            row = await self.db.fetch_one(
-                f"""SELECT {field_name} FROM character_state_entries
-                    WHERE card_id = ? AND rp_folder = ? AND branch = ?
-                    ORDER BY exchange_number DESC LIMIT 1""",
-                [card_id, rp_folder, branch],
-            )
+            row = await latest_character_state(self.db, rp_folder, branch, card_id)
             if not row:
                 return False, f"Character '{name}' has no state"
 
@@ -392,12 +391,7 @@ class TriggerEvaluator:
             if field_name not in _VALID_SCENE_FIELDS:
                 logger.warning("Invalid scene field in trigger condition: %s", field_name)
                 return False, f"Invalid scene field: {field_name}"
-            row = await self.db.fetch_one(
-                f"""SELECT {field_name} FROM scene_state_entries
-                    WHERE rp_folder = ? AND branch = ?
-                    ORDER BY exchange_number DESC LIMIT 1""",
-                [rp_folder, branch],
-            )
+            row = await latest_scene_state(self.db, rp_folder, branch)
             if not row:
                 return False, "No scene context"
 

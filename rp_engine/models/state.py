@@ -124,3 +124,40 @@ class StateSnapshot(BaseModel):
     events: list[EventDetail] = []
     session: dict | None = None
     branch: str = "main"
+
+
+# ---------------------------------------------------------------------------
+# Relationship Graph models
+# ---------------------------------------------------------------------------
+
+
+class RelGraphNode(BaseModel):
+    name: str
+    is_player_character: bool = False
+    importance: str | None = None
+    primary_archetype: str | None = None
+    trust_score: int = 0
+    trust_stage: str = "neutral"
+    emotional_state: str | None = None
+    location: str | None = None
+
+
+class RelGraphEdge(BaseModel):
+    from_char: str
+    to_char: str
+    trust_score: int = 0
+    trust_stage: str = "neutral"
+    dynamic: str | None = None
+    trend: str = "stable"
+    modification_count: int = 0
+
+
+class RelGraphMetadata(BaseModel):
+    total_npcs: int = 0
+    total_edges: int = 0
+
+
+class RelationshipGraphResponse(BaseModel):
+    nodes: list[RelGraphNode]
+    edges: list[RelGraphEdge]
+    metadata: RelGraphMetadata

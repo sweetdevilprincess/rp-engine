@@ -1,9 +1,9 @@
-"""Branch management — CRUD, trust baseline snapshots, ancestry walking, checkpoints.
+"""Branch management — CRUD, state snapshots, checkpoints.
 
 Uses copy-on-write branching:
-- Branch creation: INSERT record + snapshot trust baselines (2 steps)
+- Branch creation: INSERT record + snapshot all state (trust, characters, scenes, threads)
 - Rewind: creates a new branch instead of deleting (append-only)
-- State resolved lazily through ancestry graph
+- All state snapshotted eagerly at branch creation for fast single-branch reads
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from rp_engine.models.branch import (
     CheckpointInfo,
     CheckpointRestoreResponse,
 )
+from rp_engine.services.state_entry_resolver import StateEntryResolver
 from rp_engine.utils.trust import trust_stage
 
 logger = logging.getLogger(__name__)
@@ -54,12 +55,16 @@ class BranchManager:
         )
         return row["name"] if row else "main"
 
-    async def list_branches(self, rp_folder: str) -> BranchListResponse:
-        """List all branches for an RP folder with exchange counts."""
-        rows = await self.db.fetch_all(
+    async def get_all_branch_rows(self, rp_folder: str) -> list[dict]:
+        """Return raw branch rows ordered by creation time. Lightweight — no counts."""
+        return await self.db.fetch_all(
             "SELECT * FROM branches WHERE rp_folder = ? ORDER BY created_at",
             [rp_folder],
         )
+
+    async def list_branches(self, rp_folder: str) -> BranchListResponse:
+        """List all branches for an RP folder with exchange counts."""
+        rows = await self.get_all_branch_rows(rp_folder)
 
         # Batch exchange count query instead of N individual queries
         count_rows = await self.db.fetch_all(
@@ -79,6 +84,7 @@ class BranchManager:
                 branch_point_exchange=row.get("branch_point_exchange"),
                 description=row.get("description"),
                 is_active=bool(row.get("is_active")),
+                is_archived=bool(row.get("is_archived")),
                 created_at=row.get("created_at"),
                 exchange_count=exchange_counts.get(row["name"], 0),
             )
@@ -109,9 +115,57 @@ class BranchManager:
             branch_point_exchange=row.get("branch_point_exchange"),
             description=row.get("description"),
             is_active=bool(row.get("is_active")),
+            is_archived=bool(row.get("is_archived")),
             created_at=row.get("created_at"),
             exchange_count=count or 0,
         )
+
+    async def set_archived(self, name: str, rp_folder: str, archived: bool = True) -> BranchInfo:
+        """Archive or unarchive a branch. Cannot archive the active branch."""
+        row = await self.db.fetch_one(
+            "SELECT * FROM branches WHERE name = ? AND rp_folder = ?",
+            [name, rp_folder],
+        )
+        if not row:
+            raise ValueError(f"Branch '{name}' not found in '{rp_folder}'")
+        if archived and bool(row.get("is_active")):
+            raise ValueError("Cannot archive the active branch")
+        future = await self.db.enqueue_write(
+            "UPDATE branches SET is_archived = ? WHERE name = ? AND rp_folder = ?",
+            [1 if archived else 0, name, rp_folder],
+        )
+        await future
+        return await self.get_branch(name, rp_folder)
+
+    async def get_latest_exchange_number(self, rp_folder: str, branch: str) -> int:
+        """Get the latest exchange_number on a branch, or 0 if none exist."""
+        val = await self.db.fetch_val(
+            "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
+            [rp_folder, branch],
+        )
+        return val or 0
+
+    async def branch_exists(self, name: str, rp_folder: str) -> bool:
+        """Check if a branch with this name exists."""
+        row = await self.db.fetch_one(
+            "SELECT 1 FROM branches WHERE name = ? AND rp_folder = ?",
+            [name, rp_folder],
+        )
+        return row is not None
+
+    async def generate_rewind_branch_name(
+        self, base_branch: str, rewind_point: int, rp_folder: str
+    ) -> str:
+        """Generate a unique branch name for a rewind operation."""
+        name = f"{base_branch}-rewind-{rewind_point}"
+        if not await self.branch_exists(name, rp_folder):
+            return name
+        counter = 2
+        while True:
+            name = f"{base_branch}-rewind-{rewind_point}-{counter}"
+            if not await self.branch_exists(name, rp_folder):
+                return name
+            counter += 1
 
     async def create_branch(
         self,
@@ -119,16 +173,17 @@ class BranchManager:
         rp_folder: str,
         description: str | None = None,
         branch_from: str | None = None,
+        branch_point_exchange: int | None = None,
     ) -> BranchInfo:
-        """Create a new branch with trust baseline snapshots.
+        """Create a new branch with full state snapshot.
 
-        CoW simplification (2 steps instead of 9):
         1. INSERT branch record
-        2. Snapshot trust baselines from source branch
-        Then activate the new branch.
+        2. Snapshot trust baselines from source branch at branch point
+        3. Snapshot character + scene state entries at branch point
+        4. Copy thread counters at branch point
+        5. Activate the new branch
 
-        State (characters, scenes, events) is NOT copied — it's resolved
-        lazily through the ancestry graph.
+        All state is snapshotted eagerly so reads are simple single-branch queries.
         """
         now = datetime.now(UTC).isoformat()
 
@@ -142,18 +197,16 @@ class BranchManager:
             raise ValueError(f"Source branch '{source}' not found")
 
         # Check duplicate
-        existing = await self.db.fetch_one(
-            "SELECT 1 FROM branches WHERE name = ? AND rp_folder = ?",
-            [name, rp_folder],
-        )
-        if existing:
+        if await self.branch_exists(name, rp_folder):
             raise ValueError(f"Branch '{name}' already exists")
 
-        # 2. Get branch point (latest exchange + active session on source)
-        latest_exchange = await self.db.fetch_val(
-            "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, source],
-        )
+        # 2. Get branch point (caller-specified or latest exchange)
+        latest_exchange = await self.get_latest_exchange_number(rp_folder, source)
+        if branch_point_exchange is not None:
+            effective_branch_point = branch_point_exchange
+        else:
+            effective_branch_point = latest_exchange
+
         active_session = await self.db.fetch_one(
             """SELECT id FROM sessions WHERE rp_folder = ? AND branch = ?
                AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1""",
@@ -166,29 +219,18 @@ class BranchManager:
             """INSERT INTO branches (name, rp_folder, created_from, created_at,
                    branch_point_session, branch_point_exchange, description, is_active)
                VALUES (?, ?, ?, ?, ?, ?, ?, FALSE)""",
-            [name, rp_folder, source, now, session_id, latest_exchange or 0, description],
+            [name, rp_folder, source, now, session_id, effective_branch_point, description],
             priority=PRIORITY_EXCHANGE,
         )
         await future
 
         # 4. Snapshot trust baselines from source
-        await self._snapshot_trust_baselines(rp_folder, source, name, latest_exchange or 0, now)
+        await self._snapshot_trust_baselines(rp_folder, source, name, effective_branch_point, now)
 
-        # 5. Copy thread_counters (lightweight, needed for plot tracking)
-        counters = await self.db.fetch_all(
-            "SELECT * FROM thread_counters WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, source],
-        )
-        for tc in counters:
-            future = await self.db.enqueue_write(
-                """INSERT INTO thread_counters (thread_id, rp_folder, branch, current_counter, updated_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                [tc["thread_id"], rp_folder, name, tc["current_counter"], now],
-                priority=PRIORITY_EXCHANGE,
-            )
-            await future
+        # 4b. Snapshot character, scene, and thread state entries
+        await self._snapshot_state_entries(rp_folder, source, name, effective_branch_point)
 
-        # 6. Activate the new branch + invalidate cache
+        # 5. Activate the new branch + invalidate cache
         await self.switch_branch(name, rp_folder)
         if self.resolver:
             self.resolver.invalidate_cache(rp_folder)
@@ -204,7 +246,6 @@ class BranchManager:
         Collects trust from:
         1. trust_baselines on source branch (if any)
         2. Plus SUM of trust_modifications on source branch
-        3. Falls back to old relationships table if no baselines exist
         """
         # Try new system first: collect all trust modification pairs on source
         mod_pairs = await self.db.fetch_all(
@@ -237,39 +278,50 @@ class BranchManager:
                 pair = (mp["character_a"], mp["character_b"])
                 all_pairs[pair] = all_pairs.get(pair, 0) + (mp["total_change"] or 0)
 
-        # Also check old relationships table as fallback
-        if not all_pairs:
-            rel_rows = await self.db.fetch_all(
-                "SELECT * FROM relationships WHERE rp_folder = ? AND branch = ?",
-                [rp_folder, source_branch],
-            )
-            for rel in rel_rows:
-                combined = (rel.get("initial_trust_score") or 0) + (rel.get("trust_modification_sum") or 0)
-                pair = (rel["character_a"], rel["character_b"])
-                all_pairs[pair] = combined
-
         # Insert baselines for the new branch
         for (char_a, char_b), score in all_pairs.items():
             future = await self.db.enqueue_write(
                 """INSERT INTO trust_baselines
                        (character_a, character_b, rp_folder, branch, baseline_score,
-                        baseline_stage, source_branch, source_exchange, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        baseline_stage, source_branch, source_exchange, source, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'runtime', ?)""",
                 [char_a, char_b, rp_folder, new_branch, score,
                  trust_stage(score), source_branch, branch_point_exchange, now],
                 priority=PRIORITY_EXCHANGE,
             )
             await future
 
+    async def _snapshot_state_entries(
+        self, rp_folder: str, source_branch: str, new_branch: str,
+        branch_point_exchange: int,
+    ) -> None:
+        """Snapshot all CoW state entries from source to new branch.
+
+        Copies the latest state at the branch point so reads on the new branch
+        are simple single-branch queries (no ancestry walk needed).
+
+        Tables snapshotted:
+        - character_state_entries (keyed by card_id)
+        - scene_state_entries (single latest entry)
+        - thread_counter_entries (keyed by thread_id)
+        - custom_state_entries (keyed by schema_id + entity_id)
+        """
+        resolvers = [
+            StateEntryResolver(self.db, "character_state_entries", ["card_id"]),
+            StateEntryResolver(self.db, "scene_state_entries"),
+            StateEntryResolver(self.db, "thread_counter_entries", ["thread_id"]),
+            StateEntryResolver(self.db, "custom_state_entries", ["schema_id", "entity_id"]),
+        ]
+        for resolver in resolvers:
+            await resolver.snapshot_to_branch(
+                source_branch, new_branch, branch_point_exchange, rp_folder
+            )
+
     async def switch_branch(self, name: str, rp_folder: str) -> str:
         """Switch the active branch. Returns the previous active branch name."""
         previous = await self.get_active_branch(rp_folder)
 
-        target = await self.db.fetch_one(
-            "SELECT 1 FROM branches WHERE name = ? AND rp_folder = ?",
-            [name, rp_folder],
-        )
-        if not target:
+        if not await self.branch_exists(name, rp_folder):
             raise ValueError(f"Branch '{name}' not found in '{rp_folder}'")
 
         future = await self.db.enqueue_write(
@@ -343,11 +395,8 @@ class BranchManager:
         """Create a named checkpoint at the current exchange number."""
         now = datetime.now(UTC).isoformat()
 
-        latest = await self.db.fetch_val(
-            "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, branch],
-        )
-        if latest is None:
+        latest = await self.get_latest_exchange_number(rp_folder, branch)
+        if latest == 0:
             raise ValueError("No exchanges to checkpoint")
 
         existing = await self.db.fetch_one(
@@ -408,17 +457,9 @@ class BranchManager:
         target_exchange = cp["exchange_number"]
 
         # Generate a unique branch name for the rewind
-        new_branch_name = f"{branch}-rewind-{target_exchange}"
-        counter = 1
-        while True:
-            existing = await self.db.fetch_one(
-                "SELECT 1 FROM branches WHERE name = ? AND rp_folder = ?",
-                [new_branch_name, rp_folder],
-            )
-            if not existing:
-                break
-            counter += 1
-            new_branch_name = f"{branch}-rewind-{target_exchange}-{counter}"
+        new_branch_name = await self.generate_rewind_branch_name(
+            branch, target_exchange, rp_folder
+        )
 
         now = datetime.now(UTC).isoformat()
 
@@ -439,19 +480,10 @@ class BranchManager:
             rp_folder, branch, new_branch_name, target_exchange, now
         )
 
-        # Copy thread counters
-        counters = await self.db.fetch_all(
-            "SELECT * FROM thread_counters WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, branch],
+        # Snapshot character + scene state entries
+        await self._snapshot_state_entries(
+            rp_folder, branch, new_branch_name, target_exchange
         )
-        for tc in counters:
-            future = await self.db.enqueue_write(
-                """INSERT INTO thread_counters (thread_id, rp_folder, branch, current_counter, updated_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                [tc["thread_id"], rp_folder, new_branch_name, tc["current_counter"], now],
-                priority=PRIORITY_EXCHANGE,
-            )
-            await future
 
         # Activate the new branch
         await self.switch_branch(new_branch_name, rp_folder)

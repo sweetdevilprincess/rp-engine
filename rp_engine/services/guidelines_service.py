@@ -6,11 +6,12 @@ import logging
 from pathlib import Path
 
 from rp_engine.models.rp import GuidelinesResponse
+from rp_engine.utils.lru_cache import LRUCache
 
 logger = logging.getLogger(__name__)
 
 # Module-level mtime cache: rp_folder -> (mtime, response)
-_cache: dict[str, tuple[float, GuidelinesResponse]] = {}
+_cache: LRUCache[str, tuple[float, GuidelinesResponse]] = LRUCache(maxsize=32)
 
 
 class GuidelinesService:
@@ -31,13 +32,14 @@ class GuidelinesService:
             return None
 
         mtime = path.stat().st_mtime
-        if rp_folder in _cache:
-            cached_mtime, cached_resp = _cache[rp_folder]
+        cached = _cache.get(rp_folder)
+        if cached is not None:
+            cached_mtime, cached_resp = cached
             if cached_mtime == mtime:
                 return cached_resp
 
         try:
-            frontmatter, _ = parse_file(path)
+            frontmatter, file_body = parse_file(path)
             if frontmatter:
                 resp = GuidelinesResponse(
                     pov_mode=frontmatter.get("pov_mode"),
@@ -52,8 +54,13 @@ class GuidelinesService:
                     sensitive_themes=frontmatter.get("sensitive_themes", []),
                     hard_limits=frontmatter.get("hard_limits"),
                     response_length=frontmatter.get("response_length"),
+                    include_writing_principles=frontmatter.get("include_writing_principles", True),
+                    include_npc_framework=frontmatter.get("include_npc_framework", True),
+                    include_output_format=frontmatter.get("include_output_format", True),
+                    avatar=frontmatter.get("avatar"),
+                    body=file_body.strip() if file_body and file_body.strip() else None,
                 )
-                _cache[rp_folder] = (mtime, resp)
+                _cache.put(rp_folder, (mtime, resp))
                 return resp
         except Exception as e:
             logger.warning("Failed to parse guidelines: %s", e)

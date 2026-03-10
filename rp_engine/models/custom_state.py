@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -57,3 +59,20 @@ class CustomStateSnapshot(BaseModel):
     """All current custom state values for an RP."""
     schemas: list[CustomStateSchema] = []
     values: list[CustomStateValue] = []
+
+
+class PCCustomStateItem(BaseModel):
+    schema_id: str
+    category: str
+    name: str
+    data_type: str
+    value: Any = None
+    display_format: str  # inject_as
+
+
+class PCStateResponse(BaseModel):
+    character: str
+    location: str | None = None
+    emotional_state: str | None = None
+    conditions: list[str] = []
+    custom_state: list[PCCustomStateItem] = []

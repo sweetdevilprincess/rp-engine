@@ -21,13 +21,22 @@ from rp_engine.models.state import (
     CharacterUpdate,
     EventDetail,
     RelationshipDetail,
+    RelationshipGraphResponse,
+    RelGraphEdge,
+    RelGraphMetadata,
+    RelGraphNode,
     SceneUpdate,
     StateSnapshot,
     TrustModification,
 )
 from rp_engine.services.ancestry_resolver import AncestryResolver
-from rp_engine.utils.trust import trust_stage
+from rp_engine.services.state_entry_resolver import (
+    latest_character_state,
+    latest_character_states_batch,
+    latest_scene_state,
+)
 from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
+from rp_engine.utils.trust import trust_stage
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +51,7 @@ class StateManager:
         self.db = db
         self.config = config
         self.resolver = resolver
+        self.diagnostic_logger = None  # injected by container
 
     # ===================================================================
     # Exchange Number Resolution
@@ -130,12 +140,8 @@ class StateManager:
         if not card:
             return None
 
-        # 2. Resolve runtime state through ancestry
-        runtime = None
-        if self.resolver:
-            runtime = await self.resolver.resolve_character_state(
-                card["id"], rp_folder, branch
-            )
+        # 2. Resolve runtime state (direct branch query — state snapshotted at branch creation)
+        runtime = await latest_character_state(self.db, rp_folder, branch, card["id"])
 
         # 3. Build CharacterDetail from card + runtime state
         fm = safe_parse_json(card.get("frontmatter"))
@@ -172,23 +178,9 @@ class StateManager:
 
         # Batch fetch runtime state
         card_ids = [lr["card_id"] for lr in ledger_rows]
-        runtime_map: dict[str, dict] = {}
-
-        if card_ids:
-            placeholders = ",".join("?" for _ in card_ids)
-            runtime_rows = await self.db.fetch_all(
-                f"""SELECT cse.* FROM character_state_entries cse
-                    INNER JOIN (
-                        SELECT card_id, MAX(exchange_number) as max_ex
-                        FROM character_state_entries
-                        WHERE rp_folder = ? AND branch = ? AND card_id IN ({placeholders})
-                        GROUP BY card_id
-                    ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
-                    WHERE cse.rp_folder = ? AND cse.branch = ?""",
-                [rp_folder, branch] + card_ids + [rp_folder, branch],
-            )
-            for row in runtime_rows:
-                runtime_map[row["card_id"]] = dict(row)
+        runtime_map = await latest_character_states_batch(
+            self.db, rp_folder, branch, card_ids
+        ) if card_ids else {}
 
         result = {}
         for lr in ledger_rows:
@@ -272,12 +264,8 @@ class StateManager:
                 )
                 await future
 
-            # 3. Resolve current state and merge
-            current_runtime = None
-            if self.resolver:
-                current_runtime = await self.resolver.resolve_character_state(
-                    card_id, rp_folder, branch
-                )
+            # 3. Resolve current state and merge (direct branch query)
+            current_runtime = await latest_character_state(self.db, rp_folder, branch, card_id)
 
             new_location = updates.location if updates.location is not None else (
                 current_runtime.get("location") if current_runtime else None
@@ -452,6 +440,156 @@ class StateManager:
 
         return results
 
+    async def get_relationship_graph(
+        self,
+        rp_folder: str,
+        branch: str = "main",
+        pov_character: str | None = None,
+    ) -> RelationshipGraphResponse:
+        """Build a relationship graph with nodes (characters) and edges (trust)."""
+        # 1. Get character cards → nodes
+        card_rows = await self.db.fetch_all(
+            """SELECT name, importance, frontmatter FROM story_cards
+               WHERE rp_folder = ? AND card_type IN ('character', 'npc')""",
+            [rp_folder],
+        )
+
+        # Build name→card info map + card_id→name mapping
+        card_info: dict[str, dict] = {}
+        card_id_to_name: dict[str, str] = {}
+        for row in card_rows:
+            fm = safe_parse_json(row["frontmatter"])
+            card_info[row["name"]] = {
+                "importance": row["importance"],
+                "primary_archetype": fm.get("primary_archetype"),
+                "is_player_character": (
+                    fm.get("character_type", "").lower() == "pc"
+                    or fm.get("pov_character", False) is True
+                    or fm.get("role", "").lower() == "pov_character"
+                ),
+                "initial_relationships": fm.get("initial_relationships", []),
+            }
+            cid = fm.get("card_id")
+            if cid:
+                card_id_to_name[str(cid).lower()] = row["name"]
+
+        # 2. Get character states
+        char_states = await self.get_all_characters(rp_folder, branch)
+
+        # 3. Get relationships from trust_baselines
+        relationships = await self.get_all_relationships(rp_folder, branch)
+
+        # 4. Build trend data from trust_modifications (last 5 per pair)
+        trend_rows = await self.db.fetch_all(
+            """SELECT character_a, character_b, change,
+                      ROW_NUMBER() OVER (PARTITION BY character_a, character_b ORDER BY created_at DESC) as rn
+               FROM trust_modifications
+               WHERE rp_folder = ? AND branch = ?""",
+            [rp_folder, branch],
+        )
+        # Group last 5 changes per pair
+        trend_map: dict[tuple[str, str], list[int]] = {}
+        mod_count_map: dict[tuple[str, str], int] = {}
+        for row in trend_rows:
+            pair = (row["character_a"], row["character_b"])
+            mod_count_map[pair] = mod_count_map.get(pair, 0) + 1
+            if row["rn"] <= 5:
+                trend_map.setdefault(pair, []).append(row["change"])
+
+        # 5. Extract card-defined initial_relationships as fallback edges
+        # These provide edges even before any trust modifications happen
+        existing_pairs: set[tuple[str, str]] = set()
+        for rel in relationships:
+            existing_pairs.add((rel.character_a.lower(), rel.character_b.lower()))
+            existing_pairs.add((rel.character_b.lower(), rel.character_a.lower()))
+
+        card_edges: list[RelGraphEdge] = []
+        for card_name, info in card_info.items():
+            for ir in info.get("initial_relationships") or []:
+                if not isinstance(ir, dict):
+                    continue
+                target_id = str(ir.get("target", "")).lower()
+                target_name = card_id_to_name.get(target_id, "")
+                if not target_name:
+                    continue
+                pair_key = (card_name.lower(), target_name.lower())
+                if pair_key in existing_pairs:
+                    continue
+                existing_pairs.add(pair_key)
+                existing_pairs.add((target_name.lower(), card_name.lower()))
+                score = ir.get("trust", 0)
+                card_edges.append(RelGraphEdge(
+                    from_char=card_name,
+                    to_char=target_name,
+                    trust_score=score,
+                    trust_stage=trust_stage(score),
+                    dynamic=ir.get("role"),
+                    trend="stable",
+                    modification_count=0,
+                ))
+
+        # 6. Collect all character names from cards + relationships + card edges
+        all_names: set[str] = set(card_info.keys())
+        for rel in relationships:
+            all_names.add(rel.character_a)
+            all_names.add(rel.character_b)
+        for ce in card_edges:
+            all_names.add(ce.from_char)
+            all_names.add(ce.to_char)
+
+        # 7. Build nodes
+        all_edges_for_trust = list(relationships) + [
+            type("_Rel", (), {"character_a": e.from_char, "character_b": e.to_char, "live_trust_score": e.trust_score})
+            for e in card_edges
+        ]
+        nodes: list[RelGraphNode] = []
+        for name in sorted(all_names):
+            info = card_info.get(name, {})
+            char_state = char_states.get(name)
+            # Find max trust score for this character across all relationships
+            max_trust = 0
+            for rel in all_edges_for_trust:
+                if rel.character_a == name or rel.character_b == name:
+                    if abs(rel.live_trust_score) > abs(max_trust):
+                        max_trust = rel.live_trust_score
+
+            nodes.append(RelGraphNode(
+                name=name,
+                is_player_character=info.get("is_player_character", False),
+                importance=info.get("importance"),
+                primary_archetype=info.get("primary_archetype"),
+                trust_score=max_trust,
+                trust_stage=trust_stage(max_trust),
+                emotional_state=char_state.emotional_state if char_state else None,
+                location=char_state.location if char_state else None,
+            ))
+
+        # 8. Build edges from trust_baselines + card-defined relationships
+        edges: list[RelGraphEdge] = []
+        for rel in relationships:
+            pair = (rel.character_a, rel.character_b)
+            changes = trend_map.get(pair, [])
+            trend_sum = sum(changes)
+            trend = "rising" if trend_sum > 0 else ("falling" if trend_sum < 0 else "stable")
+
+            edges.append(RelGraphEdge(
+                from_char=rel.character_a,
+                to_char=rel.character_b,
+                trust_score=rel.live_trust_score,
+                trust_stage=rel.trust_stage,
+                dynamic=rel.dynamic,
+                trend=trend,
+                modification_count=mod_count_map.get(pair, 0),
+            ))
+        edges.extend(card_edges)
+
+        npc_count = sum(1 for n in nodes if not n.is_player_character)
+        return RelationshipGraphResponse(
+            nodes=nodes,
+            edges=edges,
+            metadata=RelGraphMetadata(total_npcs=npc_count, total_edges=len(edges)),
+        )
+
     async def _get_session_trust_caps(
         self, char_a: str, char_b: str, rp_folder: str, branch: str
     ) -> dict[str, int]:
@@ -606,6 +744,26 @@ class StateManager:
         )
         await future
 
+        if self.diagnostic_logger:
+            self.diagnostic_logger.log(
+                category="trust",
+                event="trust_updated",
+                data={
+                    "char_a": char_a,
+                    "char_b": char_b,
+                    "requested_change": change,
+                    "effective_change": effective_change,
+                    "direction": direction,
+                    "old_score": current_live,
+                    "new_score": current_live + effective_change,
+                    "reason": reason,
+                    "rp_folder": rp_folder,
+                    "branch": branch,
+                    "exchange_id": exchange_id,
+                    "bypass_session_cap": bypass_session_cap,
+                },
+            )
+
         # Return updated relationship
         rel = await self.get_relationship(char_a, char_b, rp_folder, branch)
         if rel:
@@ -623,16 +781,15 @@ class StateManager:
     async def get_scene(
         self, rp_folder: str, branch: str = "main"
     ) -> SceneState:
-        """Read the current scene context, resolved through ancestry."""
-        if self.resolver:
-            row = await self.resolver.resolve_scene_state(rp_folder, branch)
-            if row:
-                return SceneState(
-                    location=row.get("location"),
-                    time_of_day=row.get("time_of_day"),
-                    mood=row.get("mood"),
-                    in_story_timestamp=row.get("in_story_timestamp"),
-                )
+        """Read the current scene context (direct branch query — state snapshotted at branch creation)."""
+        row = await latest_scene_state(self.db, rp_folder, branch)
+        if row:
+            return SceneState(
+                location=row.get("location"),
+                time_of_day=row.get("time_of_day"),
+                mood=row.get("mood"),
+                in_story_timestamp=row.get("in_story_timestamp"),
+            )
         return SceneState()
 
     async def update_scene(

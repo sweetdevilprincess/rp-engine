@@ -12,7 +12,6 @@ from collections import deque
 from dataclasses import dataclass
 
 from rp_engine.database import Database
-from rp_engine.utils.json_helpers import safe_parse_json
 from rp_engine.utils.normalization import (
     file_to_key,
     id_to_key,
@@ -177,100 +176,6 @@ class GraphResolver:
                         )
 
         return results
-
-    async def get_npc_enrichment(
-        self,
-        npc_id: str,
-        scene_ids: list[str],
-        rp_folder: str,
-        max_hops: int = 2,
-    ) -> dict:
-        """Gather memories, secrets, knowledge for an NPC via graph edges."""
-        connections = await self.get_connections([npc_id], max_hops=max_hops)
-
-        memories = []
-        secrets = []
-        knowledge = []
-
-        for conn in connections:
-            if conn.card_type == "memory":
-                memories.append({
-                    "entity_id": conn.entity_id,
-                    "name": conn.entity_name,
-                    "connection_type": conn.connection_type,
-                    "content": conn.content,
-                    "summary": conn.summary,
-                })
-            elif conn.card_type == "secret":
-                secrets.append({
-                    "entity_id": conn.entity_id,
-                    "name": conn.entity_name,
-                    "connection_type": conn.connection_type,
-                    "content": conn.content,
-                    "summary": conn.summary,
-                })
-            elif conn.card_type == "knowledge":
-                knowledge.append({
-                    "entity_id": conn.entity_id,
-                    "name": conn.entity_name,
-                    "connection_type": conn.connection_type,
-                    "content": conn.content,
-                    "summary": conn.summary,
-                })
-
-        return {
-            "memories": memories,
-            "secrets": secrets,
-            "knowledge": knowledge,
-        }
-
-    async def filter_secrets_for_character(
-        self, secret_ids: list[str], character_id: str
-    ) -> list[str]:
-        """POV-aware secret filtering.
-
-        Keep secrets where known_by → character.
-        Remove secrets where unknown_to → character.
-        """
-        if not secret_ids:
-            return []
-
-        kept: list[str] = []
-        char_key = character_id.split(":")[-1] if ":" in character_id else character_id
-
-        for sid in secret_ids:
-            card = await self.db.fetch_one(
-                "SELECT frontmatter FROM story_cards WHERE id = ?", [sid]
-            )
-            if not card or not card.get("frontmatter"):
-                kept.append(sid)
-                continue
-
-            fm = safe_parse_json(card["frontmatter"])
-            if not fm:
-                kept.append(sid)
-                continue
-
-            # Check unknown_to
-            unknown_to = fm.get("unknown_to", [])
-            if isinstance(unknown_to, list):
-                unknown_lower = [u.lower().strip() for u in unknown_to if isinstance(u, str)]
-                if char_key.lower() in unknown_lower:
-                    continue
-
-            # Check known_by — if present, character must be listed
-            known_by = fm.get("known_by", [])
-            if isinstance(known_by, list) and known_by:
-                known_lower = [
-                    k.lower().strip().split("(")[0].strip()
-                    for k in known_by if isinstance(k, str)
-                ]
-                if char_key.lower() not in known_lower:
-                    continue
-
-            kept.append(sid)
-
-        return kept
 
     async def _load_adjacency(
         self, rp_folder: str | None

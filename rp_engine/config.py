@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -25,6 +26,7 @@ class ServerConfig(BaseModel):
         "http://127.0.0.1:3000",
     ]
     lan_access: bool = False
+    api_key: str | None = None  # Bearer token for /v1/* endpoints; None = no auth
 
 
 class PathsConfig(BaseModel):
@@ -39,11 +41,34 @@ class LLMModelsConfig(BaseModel):
     embeddings: str = "openai/text-embedding-3-small"
 
 
+class ProviderConfig(BaseModel):
+    """Configuration for a single LLM provider."""
+    type: str = "openrouter"           # "openrouter" | "openai_compat"
+    base_url: str | None = None        # Required for openai_compat
+    api_key: str | None = None         # "env:VAR_NAME" or literal or None
+    timeout: float = 30.0
+    max_concurrency: int = 5
+
+
+class LLMModeConfig(BaseModel):
+    """Chat backend selection. Controls which endpoint accepts chat requests."""
+    chat: Literal["provider", "sdk"] = "provider"
+
+
 class LLMConfig(BaseModel):
     provider: str = "openrouter"
     api_key: str = "env:OPENROUTER_API_KEY"
+    providers: dict[str, ProviderConfig] = {}
     models: LLMModelsConfig = LLMModelsConfig()
     fallback_model: str = "google/gemini-2.0-flash-001"
+    embedding_fallback_provider: str | None = None
+    mode: LLMModeConfig = LLMModeConfig()
+
+
+class PacingPresets(BaseModel):
+    fast: dict[str, int] = {"gentle": 3, "moderate": 5, "strong": 8}
+    moderate: dict[str, int] = {"gentle": 5, "moderate": 10, "strong": 15}
+    slow: dict[str, int] = {"gentle": 8, "moderate": 15, "strong": 20}
 
 
 class ContextConfig(BaseModel):
@@ -55,6 +80,8 @@ class ContextConfig(BaseModel):
     past_exchange_min_score: float = 0.65
     max_extracted_memories: int = 10
     extracted_memory_min_score: float = 0.5
+    include_custom_state: bool = True
+    pacing_presets: PacingPresets = PacingPresets()
 
 
 class ChatConfig(BaseModel):
@@ -62,6 +89,11 @@ class ChatConfig(BaseModel):
     model: str | None = None
     temperature: float = 0.7
     max_tokens: int = 4000
+    max_variants: int = 10
+    regenerate_temperature_bump: float = 0.05
+    auto_activate_regeneration: bool = True
+    continue_max_tokens: int = 2000
+    auto_detect_truncation: bool = True
 
 
 class SearchConfig(BaseModel):
@@ -71,6 +103,8 @@ class SearchConfig(BaseModel):
     chunk_size: int = 1000
     chunk_overlap: int = 200
     embedding_dimension: int = 1536
+    chunking_strategy: str = "fixed"  # "fixed" or "by_character"
+    vector_cache_max: int = 8  # LRU cache size for loaded embedding matrices
 
 
 class NPCConfig(BaseModel):
@@ -95,6 +129,31 @@ class TrustConfig(BaseModel):
     min_score: int = -50
     max_score: int = 50
     modifier_effects: dict[str, ModifierTrustEffect] = {}
+
+
+class AutoReportConfig(BaseModel):
+    enabled: bool = False
+    url: str = ""                    # webhook URL to POST logs to
+    on_error: bool = True            # auto-send on unhandled errors
+    on_session_end: bool = False     # auto-send when a session ends
+
+
+class DiagnosticConfig(BaseModel):
+    enabled: bool = False
+    level: str = "full"              # "full" | "metadata"
+    max_file_size_mb: int = 50       # rotate after this size
+    max_files: int = 10              # keep this many archived files
+    auto_purge_days: int = 30        # purge files older than this
+    auto_report: AutoReportConfig = AutoReportConfig()
+    reporter_key: str = ""           # auto-generated UUID if empty
+
+
+class AnalysisConfig(BaseModel):
+    undo_cascade_depth: int = 5
+
+
+class AutoSaveConfig(BaseModel):
+    enabled: bool = False
 
 
 class ContinuityConfig(BaseModel):
@@ -123,7 +182,10 @@ class RPEngineConfig(BaseSettings):
     search: SearchConfig = SearchConfig()
     npc: NPCConfig = NPCConfig()
     trust: TrustConfig = TrustConfig()
+    analysis: AnalysisConfig = AnalysisConfig()
+    auto_save: AutoSaveConfig = AutoSaveConfig()
     continuity: ContinuityConfig = ContinuityConfig()
+    diagnostics: DiagnosticConfig = DiagnosticConfig()
     rp: RPConfig = RPConfig()
 
     # Standalone field — picks up OPENROUTER_API_KEY env var (no RP_ENGINE_ prefix)

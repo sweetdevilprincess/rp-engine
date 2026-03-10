@@ -11,6 +11,10 @@ import logging
 import re
 
 from rp_engine.database import Database
+from rp_engine.services.state_entry_resolver import (
+    latest_character_states_batch,
+    latest_scene_state,
+)
 from rp_engine.utils.json_helpers import safe_parse_json_array
 
 logger = logging.getLogger(__name__)
@@ -225,18 +229,18 @@ class SceneClassifier:
         result = dict(scores)
 
         # Character conditions + emotional states from CoW table
-        chars = await self.db.fetch_all(
-            """SELECT cse.conditions, cse.emotional_state
-               FROM character_state_entries cse
-               INNER JOIN (
-                   SELECT card_id, MAX(exchange_number) as max_ex
-                   FROM character_state_entries
-                   WHERE rp_folder = ? AND branch = ?
-                   GROUP BY card_id
-               ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
-               WHERE cse.rp_folder = ? AND cse.branch = ?""",
-            [rp_folder, branch, rp_folder, branch],
-        )
+        # Fetch all card_ids first, then batch resolve
+        all_card_ids = [
+            r["card_id"] for r in await self.db.fetch_all(
+                """SELECT DISTINCT card_id FROM character_state_entries
+                   WHERE rp_folder = ? AND branch = ?""",
+                [rp_folder, branch],
+            )
+        ]
+        batch_states = await latest_character_states_batch(
+            self.db, rp_folder, branch, all_card_ids
+        ) if all_card_ids else {}
+        chars = list(batch_states.values())
         for char in chars:
             # Parse conditions JSON array
             conditions_raw = char.get("conditions")
@@ -256,12 +260,7 @@ class SceneClassifier:
                         result[signal] = result.get(signal, 0) + boost
 
         # Scene mood from CoW table
-        scene = await self.db.fetch_one(
-            """SELECT mood FROM scene_state_entries
-               WHERE rp_folder = ? AND branch = ?
-               ORDER BY exchange_number DESC LIMIT 1""",
-            [rp_folder, branch],
-        )
+        scene = await latest_scene_state(self.db, rp_folder, branch)
         if scene and scene.get("mood"):
             mood_lower = scene["mood"].lower()
             for mood_val, signal, boost in MOOD_BOOSTS:

@@ -10,6 +10,7 @@ class BranchCreate(BaseModel):
     rp_folder: str
     description: str | None = None
     branch_from: str | None = None
+    branch_point_exchange: int | None = None
 
 
 class BranchInfo(BaseModel):
@@ -20,8 +21,13 @@ class BranchInfo(BaseModel):
     branch_point_exchange: int | None = None
     description: str | None = None
     is_active: bool = False
+    is_archived: bool = False
     created_at: str | None = None
     exchange_count: int = 0
+
+
+class BranchArchiveRequest(BaseModel):
+    archived: bool = True
 
 
 class BranchListResponse(BaseModel):

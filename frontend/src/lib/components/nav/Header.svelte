@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { activeRP } from '$lib/stores/rp';
 	import { serverHealth } from '$lib/stores/health';
+	import { getAvatarUrl } from '$lib/api/rp';
 	import BranchIndicator from './BranchIndicator.svelte';
 
 	/** Bound from layout - true when main content has scrolled past threshold */
@@ -18,6 +19,7 @@
 		{ path: '/sessions',    label: 'Sessions',    rpRequired: true  },
 		{ path: '/generations', label: 'Generations', rpRequired: true  },
 		{ path: '/dashboard',   label: 'Dashboard',   rpRequired: true  },
+		{ path: '/prompt',      label: 'Prompt',      rpRequired: true  },
 		{ path: '/chat',        label: 'Chat',        rpRequired: true  },
 		{ path: '/dev',         label: 'Dev',         rpRequired: true  },
 		{ path: '/settings',    label: 'Settings',    rpRequired: false },
@@ -45,6 +47,17 @@
 			? $activeRP.rp_folder.split(/[-_]/).map((w: string) => w[0]?.toUpperCase()).join('').slice(0, 2)
 			: 'RP'
 	);
+
+	let avatarUrl = $derived(
+		$activeRP ? getAvatarUrl($activeRP.rp_folder) : null
+	);
+
+	let avatarFailed = $state(false);
+
+	// Reset avatarFailed when RP changes
+	$effect(() => {
+		if ($activeRP) avatarFailed = false;
+	});
 </script>
 
 <div class="header-wrap" class:scrolled>
@@ -57,9 +70,18 @@
 				onclick={() => $activeRP ? goto(`/${$activeRP.rp_folder}/`) : goto('/')}
 				title={$activeRP ? $activeRP.rp_folder : 'Home'}
 			>
-				<span class="avatar-text" class:avatar-text-sm={scrolled}>
-					{initials}
-				</span>
+				{#if avatarUrl && !avatarFailed}
+					<img
+						src={avatarUrl}
+						alt={$activeRP?.rp_folder ?? 'RP'}
+						class="avatar-img"
+						onerror={() => { avatarFailed = true; }}
+					/>
+				{:else}
+					<span class="avatar-text" class:avatar-text-sm={scrolled}>
+						{initials}
+					</span>
+				{/if}
 			</button>
 		</div>
 
@@ -151,14 +173,14 @@
 		width: 52px;
 		height: 52px;
 		border-radius: 50%;
-		border: 2.5px solid var(--color-warm);
-		background: linear-gradient(135deg, var(--color-warm-soft), var(--color-gold-soft));
+		border: 2.5px solid var(--color-accent);
+		background: linear-gradient(135deg, var(--color-accent-soft), var(--color-accent-border));
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		cursor: pointer;
 		overflow: hidden;
-		box-shadow: 0 3px 12px rgba(184, 159, 106, 0.2), 0 0 0 3px var(--color-surface);
+		box-shadow: 0 3px 12px var(--color-accent-shadow), 0 0 0 3px var(--color-surface);
 		transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
 		            height 0.35s cubic-bezier(0.4, 0, 0.2, 1),
 		            box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1);
@@ -173,11 +195,18 @@
 		font-family: 'Lora', Georgia, serif;
 		font-weight: 700;
 		font-size: 17px;
-		color: var(--color-warm-deep);
+		color: var(--color-accent-hover);
 		transition: font-size 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 	}
 	.avatar-text-sm {
 		font-size: 11px;
+	}
+
+	.avatar-img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		border-radius: 50%;
 	}
 
 	/* -- Nav -- */
@@ -264,15 +293,15 @@
 	.status-online { background: var(--color-success); }
 	.status-offline { background: var(--color-error); }
 
-	/* -- Gold decorative line -- */
+	/* -- Accent decorative line -- */
 	.gold-line {
 		height: 2px;
 		background: linear-gradient(
 			90deg,
 			transparent 5%,
-			var(--color-gold-border) 25%,
-			color-mix(in srgb, var(--color-gold) 53%, transparent) 50%,
-			var(--color-gold-border) 75%,
+			var(--color-accent-border) 25%,
+			color-mix(in srgb, var(--color-accent) 53%, transparent) 50%,
+			var(--color-accent-border) 75%,
 			transparent 95%
 		);
 		position: absolute;

@@ -1,5 +1,5 @@
 import { apiFetch } from './client';
-import type { StateSnapshot, CharacterDetail, SceneStateDetail } from '$lib/types';
+import type { StateSnapshot, CharacterDetail, SceneStateDetail, RelationshipDetail, RelationshipGraphResponse } from '$lib/types';
 
 export async function getFullState(): Promise<StateSnapshot> {
 	return apiFetch<StateSnapshot>('/api/state');
@@ -22,4 +22,23 @@ export async function updateScene(
 		method: 'PUT',
 		body: JSON.stringify(body),
 	});
+}
+
+export async function getRelationshipGraph(
+	povCharacter?: string,
+): Promise<RelationshipGraphResponse> {
+	return apiFetch<RelationshipGraphResponse>('/api/state/relationship-graph', {
+		params: povCharacter ? { pov_character: povCharacter } : undefined,
+	});
+}
+
+export async function adjustTrust(
+	charA: string,
+	charB: string,
+	body: { trust_change: number; reason: string; direction?: string },
+): Promise<RelationshipDetail> {
+	return apiFetch<RelationshipDetail>(
+		`/api/state/relationships/${encodeURIComponent(charA)}/${encodeURIComponent(charB)}`,
+		{ method: 'PUT', body: JSON.stringify(body) },
+	);
 }

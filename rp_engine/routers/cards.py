@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import logging
+import re
 from pathlib import Path
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 
 from rp_engine.database import Database
 from rp_engine.dependencies import (
     get_card_indexer,
     get_db,
+    get_graph_resolver,
+    get_guidelines_service,
     get_llm_client,
     get_vault_root,
 )
@@ -23,10 +23,15 @@ from rp_engine.models.story_card import (
     AuditCardsResponse,
     AuditGap,
     CardListResponse,
+    CardValidateRequest,
+    DeleteCardResponse,
     EntityConnection,
     GapEvidenceResponse,
     GapExchangeRecord,
+    GenerateCardNameRequest,
+    GenerateCardNameResponse,
     ReindexResponse,
+    RelationshipSyncResult,
     SceneEvidence,
     StoryCardCreate,
     StoryCardDetail,
@@ -36,14 +41,79 @@ from rp_engine.models.story_card import (
     SuggestCardResponse,
 )
 from rp_engine.services.card_indexer import CARD_TYPE_DIRS, CardIndexer
+from rp_engine.services.graph_resolver import GraphResolver
 from rp_engine.services.llm_client import LLMClient
-from rp_engine.utils.frontmatter import serialize_frontmatter
+from rp_engine.utils.frontmatter import parse_frontmatter, serialize_frontmatter
+from rp_engine.utils.json_helpers import safe_parse_json
 from rp_engine.utils.normalization import generate_card_id, normalize_key
 from rp_engine.utils.scene_detection import group_into_scenes
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
+
+# Pattern matches all Obsidian Templater expressions: <% ... %>
+_TEMPLATER_RE = re.compile(r"<%.*?%>")
+
+# Pattern to strip markdown code fences wrapping the entire response
+_CODE_FENCE_RE = re.compile(r"^```(?:markdown|yaml|md)?\s*\n(.*?)```\s*$", re.DOTALL)
+
+
+def _sanitize_llm_card(markdown: str) -> str:
+    """Clean up common LLM generation artifacts in card markdown.
+
+    Handles:
+    - Markdown code fences wrapping the entire response
+    - Duplicate frontmatter blocks (keeps the more complete one)
+    - Stray 'yaml' text after a closing --- (from code fence leakage)
+    """
+    text = markdown.strip()
+
+    # Strip wrapping code fences (```markdown ... ```)
+    m = _CODE_FENCE_RE.match(text)
+    if m:
+        text = m.group(1).strip()
+
+    # Detect duplicate frontmatter: two --- blocks stacked
+    if text.startswith("---"):
+        # Find the first closing ---
+        first_end = text.find("---", 3)
+        if first_end != -1:
+            after_first = text[first_end + 3:].lstrip("\n")
+            # Check if what follows is another frontmatter block
+            # (starts with --- or with bare 'yaml\n' then ---)
+            check = after_first
+            if check.startswith("yaml\n") or check.startswith("yaml\r\n"):
+                check = check.split("\n", 1)[1] if "\n" in check else check
+            if check.startswith("---"):
+                second_end = check.find("---", 3)
+                if second_end != -1:
+                    first_yaml = text[3:first_end].strip()
+                    second_yaml = check[3:second_end].strip()
+                    body = check[second_end + 3:]
+                    # Keep whichever block has more content
+                    keeper = second_yaml if len(second_yaml) > len(first_yaml) else first_yaml
+                    text = f"---\n{keeper}\n---{body}"
+
+    return text
+
+
+def _strip_templater(
+    template: str, entity_name: str, rp_folder: str, card_type: str
+) -> str:
+    """Replace Obsidian Templater expressions with concrete values for LLM prompts."""
+    card_id = generate_card_id(card_type, entity_name)
+    trigger = entity_name.lower()
+
+    # Named replacements first
+    result = template.replace("<% tp.user.rp_helpers.getTitle() %>", entity_name)
+    result = result.replace("<% tp.user.rp_helpers.getId() %>", card_id)
+    result = result.replace("<% tp.user.rp_helpers.getRpName() %>", rp_folder)
+    result = result.replace("<% tp.user.rp_helpers.getTrigger() %>", trigger)
+
+    # Remove any remaining Templater expressions (cursor, date, etc.)
+    result = _TEMPLATER_RE.sub("", result)
+    return result
 
 
 def _normalize_url_name(name: str) -> str:
@@ -103,13 +173,8 @@ async def list_cards(
         )
         tags_map: dict[str, list[str]] = {}
         for fr in fm_rows:
-            tags = []
-            if fr["frontmatter"]:
-                try:
-                    fm = json.loads(fr["frontmatter"])
-                    tags = fm.get("tags", [])
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            fm = safe_parse_json(fr["frontmatter"])
+            tags = fm.get("tags", [])
             tags_map[fr["id"]] = tags if isinstance(tags, list) else []
     else:
         alias_map = {}
@@ -210,6 +275,7 @@ async def suggest_card(
     db: Database = Depends(get_db),
     llm: LLMClient = Depends(get_llm_client),
     vault_root: Path = Depends(get_vault_root),
+    graph_resolver: GraphResolver = Depends(get_graph_resolver),
 ):
     """Generate a draft story card for an entity by searching exchanges and using LLM."""
     entity_name = body.entity_name
@@ -271,6 +337,60 @@ async def suggest_card(
             for r in rows
         )
 
+    # ---- Fetch related card content via graph ----
+    related_cards_section = ""
+    entity_id = await graph_resolver.resolve_entity(entity_name, rp_folder)
+    if entity_id:
+        connections = await graph_resolver.get_connections(
+            [entity_id], max_hops=2, max_results=8
+        )
+        if connections:
+            related_parts = []
+            for conn in connections:
+                # Hop 1: full content (directly related). Hop 2+: summary only.
+                body_text = conn.content or conn.summary
+                if body_text:
+                    # Truncate very large cards to keep prompt reasonable
+                    if len(body_text) > 2000:
+                        body_text = body_text[:2000] + "\n[...truncated]"
+                    relation = conn.connection_type.replace("_", " ")
+                    related_parts.append(
+                        f"### {conn.entity_name} ({conn.card_type}, {relation})\n{body_text}"
+                    )
+            if related_parts:
+                related_cards_section = (
+                    "## Existing related cards (use these for consistency — "
+                    "do NOT contradict established facts):\n\n"
+                    + "\n\n".join(related_parts)
+                )
+    else:
+        # Entity has no card yet — try resolving by name search in entity_connections
+        # to find any cards that reference this entity
+        conn_rows = await db.fetch_all(
+            """SELECT sc.name, sc.card_type, sc.content, sc.summary
+               FROM entity_connections ec
+               JOIN story_cards sc ON sc.id = ec.from_entity
+               WHERE LOWER(ec.to_entity) LIKE ?
+               LIMIT 5""",
+            [f"%{entity_name.lower()}%"],
+        )
+        if conn_rows:
+            related_parts = []
+            for row in conn_rows:
+                body_text = row["content"] or row["summary"] or ""
+                if body_text and len(body_text) > 2000:
+                    body_text = body_text[:2000] + "\n[...truncated]"
+                if body_text:
+                    related_parts.append(
+                        f"### {row['name']} ({row['card_type']})\n{body_text}"
+                    )
+            if related_parts:
+                related_cards_section = (
+                    "## Existing related cards (use these for consistency — "
+                    "do NOT contradict established facts):\n\n"
+                    + "\n\n".join(related_parts)
+                )
+
     # Load template
     template_map = {
         "character": "Character Template.md",
@@ -290,31 +410,57 @@ async def suggest_card(
     template_path = vault_root / "z_templates" / "Story Cards" / template_name
     template = ""
     if template_path.exists():
-        template = template_path.read_text(encoding="utf-8")
+        raw = template_path.read_text(encoding="utf-8")
+        template = _strip_templater(raw, entity_name, rp_folder, card_type)
+
+    # Split template into frontmatter and body so the LLM doesn't duplicate the frontmatter
+    template_frontmatter = ""
+    template_body = template
+    if template.startswith("---"):
+        parts = template.split("---", 2)
+        if len(parts) >= 3:
+            template_frontmatter = parts[1].strip()
+            template_body = parts[2].strip()
 
     prompt = f"""Create a story card for the entity "{entity_name}" (type: {card_type}).
 
-Use this template structure:
-{template}
+The card MUST start with exactly ONE YAML frontmatter block using these fields:
+```yaml
+{template_frontmatter}
+```
+
+Then use this body structure as a guide (only include sections where evidence supports them):
+{template_body}
 
 Based on these narrative scenes where the entity appears:
 {evidence}
 
+{related_cards_section}
+
 {f"Additional context: {additional_context}" if additional_context else ""}
 
-Return ONLY the complete markdown card with frontmatter and content."""
+Instructions:
+- Return ONLY the complete markdown card — one frontmatter block (between --- delimiters) followed by the body.
+- Do NOT include two frontmatter blocks. There must be exactly one opening --- and one closing ---.
+- The frontmatter MUST include all required fields (type, card_id, name, rp, triggers).
+- All card_id references (in connected_locations, known_by, etc.) MUST use the proper type prefix (loc_, npc_, char_, item_, org_, etc.).
+- Only populate body sections where the evidence supports it. Omit sections you have no information for rather than leaving them as empty placeholders.
+- Keep the same heading structure (## and ###) as the template for sections you do include.
+- You MUST be consistent with the related cards above. Do not invent facts that contradict what is established in existing cards. If a related card says something specific about this entity, respect that."""
 
     response = await llm.generate(
         messages=[{"role": "user", "content": prompt}],
         model=llm.models.card_generation,
         temperature=0.4,
-        max_tokens=3000,
+        max_tokens=6000,
     )
+
+    cleaned = _sanitize_llm_card(response.content)
 
     return SuggestCardResponse(
         entity_name=entity_name,
         card_type=card_type,
-        markdown=response.content,
+        markdown=cleaned,
         model_used=response.model,
     )
 
@@ -451,11 +597,6 @@ async def audit_cards(
     )
 
 
-class CardValidateRequest(BaseModel):
-    card_type: str
-    frontmatter: dict[str, Any]
-
-
 # IMPORTANT: /schema and /validate must be defined BEFORE /{card_type} to avoid route shadowing
 @router.get("/schema/{card_type}")
 async def get_schema(card_type: str):
@@ -473,6 +614,144 @@ async def validate_card(body: CardValidateRequest):
     return {"valid": valid, "errors": errors, "warnings": warnings}
 
 
+@router.post("/generate-name", response_model=GenerateCardNameResponse)
+async def generate_card_name(
+    body: GenerateCardNameRequest,
+    rp_folder: str = Query(...),
+    db: Database = Depends(get_db),
+    llm: LLMClient = Depends(get_llm_client),
+    vault_root: Path = Depends(get_vault_root),
+    guidelines_svc=Depends(get_guidelines_service),
+):
+    """Generate name suggestions for a new story card using LLM."""
+    card_type = body.card_type
+    hints = body.hints
+    count = min(body.count, 10)
+
+    # Get existing card names to avoid duplicates
+    existing_rows = await db.fetch_all(
+        "SELECT name FROM story_cards WHERE card_type = ? AND rp_folder = ? LIMIT 20",
+        [card_type, rp_folder],
+    )
+    existing_names = {r["name"].lower() for r in existing_rows}
+    existing_list = [r["name"] for r in existing_rows]
+
+    # Get tone/setting from guidelines
+    tone_context = ""
+    guidelines = guidelines_svc.get_guidelines(rp_folder)
+    if guidelines:
+        parts = []
+        if guidelines.tone:
+            tone_str = ", ".join(guidelines.tone) if isinstance(guidelines.tone, list) else guidelines.tone
+            parts.append(f"Tone: {tone_str}")
+        if guidelines.scene_pacing:
+            parts.append(f"Pacing: {guidelines.scene_pacing}")
+        if parts:
+            tone_context = "\n".join(parts)
+
+    prompt = f"""Generate {count} creative name suggestions for a new "{card_type}" story card.
+
+{f"Setting/tone context: {tone_context}" if tone_context else ""}
+{f"Hints from the user: {hints}" if hints else ""}
+{f"Existing {card_type} names (avoid duplicates): {', '.join(existing_list)}" if existing_list else ""}
+
+Return a JSON object with a single key "names" containing an array of {count} name strings.
+Names should be evocative, fit the card type, and be distinct from existing names.
+Return ONLY the JSON object, no other text."""
+
+    try:
+        response = await llm.generate(
+            messages=[{"role": "user", "content": prompt}],
+            model=llm.models.card_generation,
+            temperature=0.8,
+            max_tokens=500,
+            response_format={"type": "json_object"},
+        )
+        parsed = safe_parse_json(response.content)
+        raw_names = parsed.get("names", []) if isinstance(parsed, dict) else []
+        # Dedup against existing
+        suggestions = [n for n in raw_names if isinstance(n, str) and n.lower() not in existing_names][:count]
+    except Exception:
+        logger.warning("Card name generation failed, returning empty suggestions")
+        suggestions = []
+
+    return GenerateCardNameResponse(suggestions=suggestions, card_type=card_type)
+
+
+async def _find_card_row(
+    db: Database,
+    card_type: str,
+    name: str,
+    *,
+    rp_folder: str | None = None,
+) -> dict | None:
+    """Look up a card row by type + name, falling back to alias search.
+
+    If *rp_folder* is given, also tries entity ID lookup (``rp_folder:key``).
+    Returns the DB row dict or ``None``.
+    """
+    normalized = _normalize_url_name(name)
+
+    # Direct lookup by type + normalized name
+    row = await db.fetch_one(
+        "SELECT * FROM story_cards WHERE card_type = ? AND LOWER(name) = ?",
+        [card_type, normalized],
+    )
+    if row:
+        return row
+
+    # Try entity ID if rp_folder provided (useful for card_id references)
+    if rp_folder:
+        entity_id = f"{rp_folder}:{normalized}"
+        row = await db.fetch_one(
+            "SELECT * FROM story_cards WHERE id = ?", [entity_id]
+        )
+        if row:
+            return row
+
+    # Fallback: alias lookup (try both normalized forms)
+    for alias_key in (normalized, normalize_key(name)):
+        row = await db.fetch_one(
+            """SELECT sc.* FROM story_cards sc
+               JOIN entity_aliases ea ON sc.id = ea.entity_id
+               WHERE sc.card_type = ? AND ea.alias = ?""",
+            [card_type, alias_key],
+        )
+        if row:
+            return row
+
+    return None
+
+
+async def _find_card_any_type(
+    db: Database,
+    name: str,
+    rp_folder: str,
+) -> dict | None:
+    """Look up a card row by name in any type within an RP folder.
+
+    Tries normalized name, entity ID, then alias lookup.
+    """
+    key = normalize_key(name)
+    entity_id = f"{rp_folder}:{key}"
+
+    row = await db.fetch_one(
+        "SELECT * FROM story_cards WHERE rp_folder = ? AND (LOWER(name) = ? OR id = ?)",
+        [rp_folder, key, entity_id],
+    )
+    if row:
+        return row
+
+    # Alias fallback
+    row = await db.fetch_one(
+        """SELECT sc.* FROM story_cards sc
+           JOIN entity_aliases ea ON sc.id = ea.entity_id
+           WHERE sc.rp_folder = ? AND ea.alias = ?""",
+        [rp_folder, key],
+    )
+    return row
+
+
 @router.get("/{card_type}/{name}", response_model=StoryCardDetail)
 async def get_card(
     card_type: str,
@@ -480,35 +759,11 @@ async def get_card(
     db: Database = Depends(get_db),
 ):
     """Get a single card with its frontmatter, content, and connections."""
-    normalized = _normalize_url_name(name)
-
-    # Try direct lookup by type + normalized name
-    row = await db.fetch_one(
-        "SELECT * FROM story_cards WHERE card_type = ? AND LOWER(name) = ?",
-        [card_type, normalized],
-    )
-
-    # Fallback: search by alias (try both normalized forms)
-    if not row:
-        for alias_key in (normalized, normalize_key(name)):
-            row = await db.fetch_one(
-                """SELECT sc.* FROM story_cards sc
-                   JOIN entity_aliases ea ON sc.id = ea.entity_id
-                   WHERE sc.card_type = ? AND ea.alias = ?""",
-                [card_type, alias_key],
-            )
-            if row:
-                break
-
+    row = await _find_card_row(db, card_type, name)
     if not row:
         raise HTTPException(404, detail=f"Card not found: {card_type}/{name}")
 
-    frontmatter = {}
-    if row["frontmatter"]:
-        try:
-            frontmatter = json.loads(row["frontmatter"])
-        except (json.JSONDecodeError, TypeError):
-            pass
+    frontmatter = safe_parse_json(row["frontmatter"])
 
     conn_rows = await db.fetch_all(
         "SELECT to_entity, connection_type, field, role FROM entity_connections WHERE from_entity = ?",
@@ -524,13 +779,17 @@ async def get_card(
         for c in conn_rows
     ]
 
+    raw_content = row["content"] or ""
+    _, body = parse_frontmatter(raw_content)
+
     return StoryCardDetail(
         name=row["name"],
         card_type=row["card_type"],
         file_path=row["file_path"],
         importance=row["importance"],
         frontmatter=frontmatter,
-        content=row["content"] or "",
+        content=raw_content,
+        body=body.strip(),
         connections=connections,
     )
 
@@ -540,11 +799,17 @@ async def create_card(
     card_type: str,
     body: StoryCardCreate,
     rp_folder: str = Query(...),
+    sync_relationships: bool = Query(True, description="Auto-update referenced cards with reciprocal relationships"),
     db: Database = Depends(get_db),
     indexer: CardIndexer = Depends(get_card_indexer),
     vault_root: Path = Depends(get_vault_root),
+    llm: LLMClient = Depends(get_llm_client),
 ):
-    """Create a new story card. Writes .md file and indexes it."""
+    """Create a new story card. Writes .md file and indexes it.
+
+    When sync_relationships=true (default), any cards referenced in
+    initial_relationships will be updated with reciprocal relationship entries.
+    """
     if card_type not in CARD_TYPE_DIRS:
         raise HTTPException(400, detail=f"Unknown card type: {card_type}")
 
@@ -575,7 +840,59 @@ async def create_card(
 
     await indexer.index_file(rp_folder, file_path)
 
+    # Sync reciprocal relationships to referenced cards
+    if sync_relationships and card_type in ("character", "npc"):
+        sync_result = await _sync_reciprocal_relationships(
+            new_card_name=body.name,
+            new_card_id=card_id,
+            new_card_frontmatter=frontmatter,
+            new_card_body=body.content,
+            rp_folder=rp_folder,
+            db=db,
+            indexer=indexer,
+            vault_root=vault_root,
+            llm=llm,
+        )
+        if sync_result.updated_cards:
+            logger.info(
+                "Synced reciprocal relationships for %s → %s",
+                body.name,
+                [e.card_name for e in sync_result.updated_cards],
+            )
+        if sync_result.errors:
+            logger.warning("Relationship sync errors: %s", sync_result.errors)
+
     return await get_card(card_type, body.name, db)
+
+
+@router.delete("/{card_type}/{name}", response_model=DeleteCardResponse)
+async def delete_card(
+    card_type: str,
+    name: str,
+    db: Database = Depends(get_db),
+    indexer: CardIndexer = Depends(get_card_indexer),
+    vault_root: Path = Depends(get_vault_root),
+):
+    """Delete a story card — removes the .md file and all index data."""
+    row = await _find_card_row(db, card_type, name)
+    if not row:
+        raise HTTPException(404, detail=f"Card not found: {card_type}/{name}")
+
+    # Delete the file
+    file_path = vault_root / row["file_path"]
+    file_deleted = False
+    if file_path.exists():
+        file_path.unlink()
+        file_deleted = True
+
+    # Remove from index (connections, aliases, keywords, story_cards)
+    await indexer.remove_file(row["rp_folder"], vault_root / row["file_path"])
+    # If remove_file didn't find it (file already gone), clean up by entity ID
+    if not file_deleted:
+        await indexer._remove_entity(row["id"])
+
+    logger.info("Deleted card: %s/%s (file_deleted=%s)", card_type, row["name"], file_deleted)
+    return DeleteCardResponse(name=row["name"], card_type=card_type, file_deleted=file_deleted)
 
 
 @router.put("/{card_type}/{name}", response_model=StoryCardDetail)
@@ -588,11 +905,7 @@ async def update_card(
     vault_root: Path = Depends(get_vault_root),
 ):
     """Update an existing card. Writes .md file and reindexes."""
-    normalized = _normalize_url_name(name)
-    row = await db.fetch_one(
-        "SELECT * FROM story_cards WHERE card_type = ? AND LOWER(name) = ?",
-        [card_type, normalized],
-    )
+    row = await _find_card_row(db, card_type, name)
     if not row:
         raise HTTPException(404, detail=f"Card not found: {card_type}/{name}")
 
@@ -600,12 +913,7 @@ async def update_card(
     if not file_path.exists():
         raise HTTPException(404, detail=f"Card file missing: {row['file_path']}")
 
-    current_fm = {}
-    if row["frontmatter"]:
-        try:
-            current_fm = json.loads(row["frontmatter"])
-        except (json.JSONDecodeError, TypeError):
-            pass
+    current_fm = safe_parse_json(row["frontmatter"])
 
     if body.frontmatter is not None:
         current_fm.update(body.frontmatter)
@@ -621,3 +929,203 @@ async def update_card(
     await indexer.index_file(rp_folder, file_path)
 
     return await get_card(card_type, row["name"], db)
+
+
+# ---------------------------------------------------------------------------
+# Reciprocal relationship sync
+# ---------------------------------------------------------------------------
+
+_SUMMARY_KEYS = ("role", "age", "gender", "occupation", "species")
+
+
+def _build_card_summary(name: str, frontmatter: dict, body: str, max_body: int = 2000) -> str:
+    """Build a brief text summary of a card for LLM prompts."""
+    parts = [f"Name: {name}"]
+    for key in _SUMMARY_KEYS:
+        val = frontmatter.get(key)
+        if val:
+            parts.append(f"{key.title()}: {val}")
+    if body:
+        _, body_text = parse_frontmatter(body) if body.startswith("---") else ("", body)
+        if body_text:
+            parts.append(f"\nCard content:\n{body_text[:max_body]}")
+    return "\n".join(parts)
+
+async def _sync_reciprocal_relationships(
+    *,
+    new_card_name: str,
+    new_card_id: str,
+    new_card_frontmatter: dict,
+    new_card_body: str,
+    rp_folder: str,
+    db: Database,
+    indexer: CardIndexer,
+    vault_root: Path,
+    llm: LLMClient,
+) -> RelationshipSyncResult:
+    """After creating a card, update referenced cards with reciprocal relationships.
+
+    For each target in ``initial_relationships``:
+    1. Look up the target card in the DB
+    2. Check if it already has a reciprocal relationship back to new_card_id
+    3. If not, use LLM to generate the reciprocal entry from the target's perspective
+    4. Update the target card's frontmatter + body and reindex
+    """
+    from rp_engine.models.story_card import RelationshipSyncEntry
+
+    result = RelationshipSyncResult(source_card=new_card_name)
+
+    relationships = new_card_frontmatter.get("initial_relationships") or []
+    if not relationships or not isinstance(relationships, list):
+        return result
+
+    # Build a summary of the new card for the LLM
+    new_card_summary = _build_card_summary(new_card_name, new_card_frontmatter, new_card_body)
+
+    for rel in relationships:
+        if not isinstance(rel, dict):
+            continue
+        target_id = rel.get("target", "")
+        if not target_id:
+            continue
+
+        try:
+            # Find the target card in the DB
+            target_row = await _find_card_any_type(db, target_id, rp_folder)
+            if not target_row:
+                # Target card doesn't exist yet — skip (forward reference)
+                continue
+
+            # Check if target already has a reciprocal relationship to new_card_id
+            target_fm = safe_parse_json(target_row["frontmatter"])
+            existing_rels = target_fm.get("initial_relationships") or []
+            already_linked = any(
+                isinstance(r, dict) and normalize_key(r.get("target", "")) == normalize_key(new_card_id)
+                for r in existing_rels
+            )
+            if already_linked:
+                continue
+
+            # Use LLM to generate reciprocal relationship
+            reciprocal = await _generate_reciprocal_relationship(
+                llm=llm,
+                new_card_name=new_card_name,
+                new_card_id=new_card_id,
+                new_card_summary=new_card_summary,
+                new_card_rel=rel,
+                target_name=target_row["name"],
+                target_fm=target_fm,
+                target_body=(target_row["content"] or ""),
+            )
+
+            if not reciprocal:
+                result.errors.append(f"LLM failed to generate reciprocal for {target_row['name']}")
+                continue
+
+            # Extract knowledge boundaries before adding to relationships
+            kb_items = reciprocal.pop("doesnt_know", [])
+
+            # Update the target card's frontmatter
+            if not isinstance(existing_rels, list):
+                existing_rels = []
+            existing_rels.append(reciprocal)
+            target_fm["initial_relationships"] = existing_rels
+
+            # Apply knowledge boundary updates if the LLM found any
+            if isinstance(kb_items, list) and kb_items:
+                target_kb = target_fm.get("knowledge_boundaries") or {}
+                if not isinstance(target_kb, dict):
+                    target_kb = {}
+                doesnt_know = target_kb.get("doesnt_know") or []
+                if not isinstance(doesnt_know, list):
+                    doesnt_know = []
+                for item in kb_items:
+                    if isinstance(item, str) and item not in doesnt_know:
+                        doesnt_know.append(item)
+                target_kb["doesnt_know"] = doesnt_know
+                target_fm["knowledge_boundaries"] = target_kb
+
+            # Write updated target card
+            _, target_body = parse_frontmatter(target_row["content"] or "")
+            updated_content = serialize_frontmatter(target_fm, target_body)
+            target_file = vault_root / target_row["file_path"]
+            target_file.write_text(updated_content, encoding="utf-8")
+            await indexer.index_file(rp_folder, target_file)
+
+            result.updated_cards.append(RelationshipSyncEntry(
+                card_name=target_row["name"],
+                card_type=target_row["card_type"],
+                relationship_added=reciprocal,
+            ))
+
+        except Exception as e:
+            result.errors.append(f"Failed to sync {target_id}: {e}")
+            logger.exception("Relationship sync error for target %s", target_id)
+
+    return result
+
+
+async def _generate_reciprocal_relationship(
+    *,
+    llm: LLMClient,
+    new_card_name: str,
+    new_card_id: str,
+    new_card_summary: str,
+    new_card_rel: dict,
+    target_name: str,
+    target_fm: dict,
+    target_body: str,
+) -> dict | None:
+    """Use LLM to generate a reciprocal relationship entry from the target's perspective."""
+    target_summary = _build_card_summary(target_name, target_fm, target_body)
+
+    prompt = f"""A new character card was just created. Generate the RECIPROCAL relationship entry that should be added to an existing character's card.
+
+NEW CHARACTER (just created):
+{new_card_summary}
+
+NEW CHARACTER'S RELATIONSHIP TO EXISTING CHARACTER:
+- target: {new_card_rel.get("target", "")}
+- role: {new_card_rel.get("role", "")}
+- trust: {new_card_rel.get("trust", 0)}
+- status: "{new_card_rel.get("status", "")}"
+
+EXISTING CHARACTER (needs a reciprocal entry):
+{target_summary}
+
+Generate the reciprocal relationship entry FROM {target_name}'s perspective TOWARD {new_card_name}.
+The trust score should reflect {target_name}'s feelings toward {new_card_name} (may differ from the reverse).
+The role should be the inverse (e.g., if new char sees target as "older brother", target sees new char as "younger sister").
+
+Also check: does the new card's content reveal anything that {target_name} DOESN'T KNOW about?
+If so, include a "doesnt_know" array of brief descriptions.
+
+Return ONLY a JSON object with these keys:
+{{"target": "{new_card_id}", "role": "<inverse role>", "trust": <integer -50 to 50>, "status": "<brief current state from {target_name}'s perspective>", "doesnt_know": ["<thing {target_name} doesn't know>"] }}
+
+If there are no knowledge gaps, set "doesnt_know" to an empty array [].
+Return ONLY the JSON, no other text."""
+
+    try:
+        response = await llm.generate(
+            messages=[{"role": "user", "content": prompt}],
+            model=llm.models.card_generation,
+            temperature=0.3,
+            max_tokens=300,
+            response_format={"type": "json_object"},
+        )
+        parsed = safe_parse_json(response.content)
+        if isinstance(parsed, dict) and "target" in parsed:
+            # Ensure target is set correctly
+            parsed["target"] = new_card_id
+            # Clamp trust
+            if "trust" in parsed:
+                parsed["trust"] = max(-50, min(50, int(parsed["trust"])))
+            # doesnt_know is extracted separately, not part of the relationship entry
+            return parsed
+    except Exception as e:
+        logger.warning("Reciprocal relationship generation failed: %s", e)
+
+    return None
+
+

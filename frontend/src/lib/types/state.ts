@@ -54,3 +54,27 @@ export interface StateSnapshot {
 	session: Record<string, unknown> | null;
 	branch: string;
 }
+export interface RelGraphNode {
+	name: string;
+	is_player_character: boolean;
+	importance: string | null;
+	primary_archetype: string | null;
+	trust_score: number;
+	trust_stage: string;
+	emotional_state: string | null;
+	location: string | null;
+}
+export interface RelGraphEdge {
+	from_char: string;
+	to_char: string;
+	trust_score: number;
+	trust_stage: string;
+	dynamic: string | null;
+	trend: 'rising' | 'falling' | 'stable';
+	modification_count: number;
+}
+export interface RelationshipGraphResponse {
+	nodes: RelGraphNode[];
+	edges: RelGraphEdge[];
+	metadata: { total_npcs: number; total_edges: number };
+}

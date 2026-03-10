@@ -11,6 +11,7 @@ export interface AppConfig {
 			embeddings: string;
 		};
 		fallback_model: string;
+		mode: { chat: 'provider' | 'sdk' };
 	};
 	chat: { exchange_window: number; model: string | null; temperature: number; max_tokens: number };
 	context: { max_documents: number; max_graph_hops: number; stale_threshold_turns: number };
@@ -29,7 +30,36 @@ export interface AppConfig {
 		min_score: number;
 		max_score: number;
 	};
+	diagnostics: DiagnosticConfig;
 	rp: { default_pov_character: string };
+}
+
+export interface DiagnosticConfig {
+	enabled: boolean;
+	level: string;
+	max_file_size_mb: number;
+	max_files: number;
+	auto_purge_days: number;
+	auto_report: AutoReportConfig;
+	reporter_key: string;
+}
+
+export interface AutoReportConfig {
+	enabled: boolean;
+	url: string;
+	on_error: boolean;
+	on_session_end: boolean;
+}
+
+export interface DiagnosticStatus {
+	enabled: boolean;
+	level: string;
+	file_size_bytes: number;
+	entry_count: number;
+	archive_count: number;
+	last_entry_ts: string | null;
+	reporter_key: string;
+	auto_report: AutoReportConfig;
 }
 
 export interface ConfigUpdate {
@@ -40,6 +70,7 @@ export interface ConfigUpdate {
 	context?: Partial<AppConfig['context']>;
 	search?: Partial<AppConfig['search']>;
 	trust?: Partial<AppConfig['trust']>;
+	diagnostics?: Partial<AppConfig['diagnostics']>;
 	rp?: Partial<AppConfig['rp']>;
 	openrouter_api_key?: string;
 }
@@ -47,4 +78,11 @@ export interface ConfigUpdate {
 export interface ActiveRPStatus {
 	active_rp: boolean;
 	session_count: number;
+}
+
+export interface ProviderTestResult {
+	provider: string;
+	status: 'ok' | 'error';
+	latency_ms: number | null;
+	error: string | null;
 }

@@ -1,4 +1,5 @@
-from typing import Optional
+from __future__ import annotations
+
 from .types import TaskSignature, Mode, Register, Intensity, Position, Element
 
 
@@ -6,8 +7,8 @@ class TaskClassifier:
     def __init__(self):
         pass
 
-    def classify(self, prompt: str, preceding_content: Optional[str] = None,
-                 override: Optional[dict] = None) -> TaskSignature:
+    def classify(self, prompt: str, preceding_content: str | None = None,
+                 override: dict | None = None) -> TaskSignature:
         """
         Produce a TaskSignature. Steps:
         1. Combine prompt + preceding_content into analysis_text

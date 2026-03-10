@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from rp_engine.database import Database
 from rp_engine.dependencies import get_db, get_lance_store, get_vector_search
 from rp_engine.services.vector_search import VectorSearch
-from rp_engine.utils.text import sanitize_fts_query
+from rp_engine.utils.embedding import has_real_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -55,19 +55,6 @@ class DebugSearchResult(BaseModel):
     bm25_score: float | None
     fused_score: float
     found_by: str  # "vector", "bm25", "both"
-
-
-def _is_zero_vector(blob: bytes | None) -> bool:
-    """Check if a blob is a zero-vector placeholder."""
-    if not blob:
-        return True
-    try:
-        import struct
-        count = len(blob) // 4
-        values = struct.unpack(f"{count}f", blob)
-        return all(v == 0.0 for v in values)
-    except Exception:
-        return True
 
 
 @router.get("/chunks", response_model=list[ChunkRow])
@@ -114,7 +101,7 @@ async def list_chunks(
             chunk_index=row["chunk_index"] or 0,
             total_chunks=row["total_chunks"] or 1,
             content=row["content"],
-            has_embedding=not _is_zero_vector(row["embedding"]),
+            has_embedding=has_real_embedding(row["embedding"]),
             created_at=row["created_at"],
         )
         for row in rows
@@ -146,7 +133,7 @@ async def get_chunks_for_file(
             chunk_index=row["chunk_index"] or 0,
             total_chunks=row["total_chunks"] or 1,
             content=row["content"],
-            has_embedding=not _is_zero_vector(row["embedding"]),
+            has_embedding=has_real_embedding(row["embedding"]),
             created_at=row["created_at"],
         )
         for row in rows

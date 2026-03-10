@@ -20,16 +20,6 @@ export interface NewEntity {
   type: string;
   first_mention_exchange: number | null;
 }
-export interface RelationshipArc {
-  characters: string[];
-  arc_summary: string;
-}
-export interface CharacterStateChange {
-  character: string;
-  field: string;
-  old_value: string | null;
-  new_value: string | null;
-}
 export interface SceneProgression {
   first_timestamp: string | null;
   last_timestamp: string | null;
@@ -45,12 +35,27 @@ export interface SessionEndSummary {
   significant_events: string[];
   trust_changes: TrustChange[];
   new_entities: NewEntity[];
-  relationship_arcs: RelationshipArc[];
-  character_state_changes: CharacterStateChange[];
   scene_progression: SceneProgression | null;
   plot_thread_status: PlotThreadStatus[];
 }
 export interface SessionEndResponse {
   session: SessionResponse;
   summary: SessionEndSummary;
+}
+
+export interface SessionTimelineEntry {
+  type: string;
+  exchange_number: number | null;
+  timestamp: string | null;
+  title: string;
+  detail: Record<string, unknown>;
+  characters: string[];
+}
+
+export interface SessionTimelineResponse {
+  session_id: string;
+  branch: string;
+  exchange_range: [number, number];
+  entries: SessionTimelineEntry[];
+  entry_counts: Record<string, number>;
 }

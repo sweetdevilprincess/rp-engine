@@ -135,6 +135,15 @@ class SceneSignificance(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class CustomStateChangeExtracted(BaseModel):
+    schema_name: str = Field(alias="schemaName", default="")
+    entity: str = ""              # character name or "" for scene-level
+    action: str = ""              # "set", "add", "remove", "subtract"
+    value: str | int | float | list | None = None
+
+    model_config = {"populate_by_name": True}
+
+
 class AnalysisLLMResult(BaseModel):
     """Top-level model matching the LLM extraction JSON schema."""
 
@@ -158,6 +167,9 @@ class AnalysisLLMResult(BaseModel):
     scene_significance: SceneSignificance = Field(
         alias="sceneSignificance", default_factory=SceneSignificance
     )
+    custom_state_changes: list[CustomStateChangeExtracted] = Field(
+        alias="customStateChanges", default=[]
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -176,6 +188,7 @@ class AnalysisResult(BaseModel):
     card_gaps_added: int = 0
     thread_alerts: int = 0
     continuity_warnings: int = 0
+    custom_state_changes: int = 0
     timestamp_advanced: bool = False
     error: str | None = None
 
@@ -292,3 +305,50 @@ class TimeAdvanceResponse(BaseModel):
     elapsed_minutes: int = 0
     activities_detected: list[str] = []
     modifier_used: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Analysis Manifest Models (undo / redo / preview)
+# ---------------------------------------------------------------------------
+
+
+class ManifestEntryResponse(BaseModel):
+    target_table: str
+    target_id: int
+    operation: str = "insert"
+
+
+class ManifestResponse(BaseModel):
+    id: int
+    exchange_number: int
+    exchange_id: int
+    session_id: str | None = None
+    status: str
+    model_used: str | None = None
+    raw_response: str | None = None
+    created_at: str
+    undone_at: str | None = None
+    entries: list[ManifestEntryResponse] = []
+    entry_counts: dict[str, int] = {}
+
+
+class ManifestListResponse(BaseModel):
+    manifests: list[ManifestResponse] = []
+    total: int = 0
+
+
+class AnalysisUndoResponse(BaseModel):
+    exchange_number: int
+    manifest_id: int
+    status: str  # 'undone' | 'not_found' | 'already_undone'
+    entries_removed: int = 0
+    tables_affected: dict[str, int] = {}
+    cascade_reanalyzed: list[int] = []
+
+
+class AnalysisPreviewResponse(BaseModel):
+    exchange_number: int
+    manifest_id: int
+    entries_count: int = 0
+    tables_affected: dict[str, int] = {}
+    cascade_exchanges: list[int] = []

@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 	import { activeRP, activeBranch } from '$lib/stores/rp';
 	import { addToast } from '$lib/stores/ui';
 	import {
-		listBranches, createBranch, switchBranch,
+		listBranches, createBranch, switchBranch, archiveBranch,
 		listCheckpoints, createCheckpoint, restoreCheckpoint,
 	} from '$lib/api/branches';
 	import { listExchanges } from '$lib/api/exchanges';
@@ -32,6 +34,7 @@
 	let newName = $state('');
 	let newDesc = $state('');
 	let newFrom = $state('');
+	let newExchangeNum = $state<number | null>(null);
 	let creating = $state(false);
 
 	// Checkpoint form
@@ -139,6 +142,15 @@
 		}
 	}
 
+	function startBranchFrom(exchangeNumber: number | null) {
+		activeTab = 'branches';
+		showCreate = true;
+		newExchangeNum = exchangeNumber;
+		newFrom = $activeBranch ?? '';
+		newName = '';
+		newDesc = '';
+	}
+
 	async function handleCreateBranch() {
 		if (!newName.trim() || !$activeRP || creating) return;
 		creating = true;
@@ -148,11 +160,12 @@
 				rp_folder: $activeRP.rp_folder,
 				description: newDesc.trim() || undefined,
 				branch_from: newFrom || undefined,
+				branch_point_exchange: newExchangeNum ?? undefined,
 			});
 			branches = [...branches, b];
 			addToast(`Branch "${b.name}" created`, 'success');
 			showCreate = false;
-			newName = ''; newDesc = ''; newFrom = '';
+			newName = ''; newDesc = ''; newFrom = ''; newExchangeNum = null;
 		} catch (e: any) {
 			addToast(e.message ?? 'Failed to create branch', 'error');
 		} finally {
@@ -189,6 +202,20 @@
 		}
 	}
 
+	let showArchived = $state(false);
+
+	async function handleArchiveBranch(branch: BranchInfo, archived: boolean) {
+		if (!$activeRP) return;
+		try {
+			const updated = await archiveBranch(branch.name, $activeRP.rp_folder, archived);
+			branches = branches.map(b => b.name === updated.name ? updated : b);
+			if (selectedBranchNode?.name === updated.name) selectedBranchNode = updated;
+			addToast(`Branch "${branch.name}" ${archived ? 'archived' : 'unarchived'}`, 'success');
+		} catch (e: any) {
+			addToast(e.message ?? 'Failed to archive branch', 'error');
+		}
+	}
+
 	function handleBranchNodeClick(branch: BranchInfo) {
 		selectedBranchNode = selectedBranchNode?.name === branch.name ? null : branch;
 		if (selectedBranchNode) {
@@ -206,8 +233,9 @@
 			: exchanges
 	);
 
-	// Build tree structure from branches
-	let branchTree = $derived(buildBranchTree(branches));
+	// Build tree structure from branches (filter archived unless toggled)
+	let visibleBranches = $derived(showArchived ? branches : branches.filter(b => !b.is_archived));
+	let branchTree = $derived(buildBranchTree(visibleBranches));
 
 	function buildBranchTree(branches: BranchInfo[]): { branch: BranchInfo; children: BranchInfo[]; depth: number }[] {
 		const childMap = new Map<string, BranchInfo[]>();
@@ -284,6 +312,13 @@
 			>
 				All branches
 			</button>
+			<button
+				class="px-3 py-2 rounded-lg text-xs transition-all border bg-surface text-text-dim border-border-custom hover:text-accent hover:border-accent/30"
+				onclick={() => startBranchFrom(0)}
+				title="Create a new branch from scratch"
+			>
+				+ New Branch
+			</button>
 		</div>
 
 		<!-- Exchange list -->
@@ -294,9 +329,12 @@
 		{:else}
 			<div class="flex flex-col gap-1.5">
 				{#each filteredExchanges as exchange}
-					<button
+					<div
 						class="bg-surface rounded-[10px] border border-border-custom overflow-hidden text-left w-full transition-all hover:shadow-sm hover:border-accent/25 cursor-pointer"
+						role="button"
+						tabindex="0"
 						onclick={() => (expandedExchangeId = expandedExchangeId === exchange.id ? null : exchange.id)}
+						onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expandedExchangeId = expandedExchangeId === exchange.id ? null : exchange.id; } }}
 					>
 						<div class="px-4 py-3">
 							<div class="flex justify-between mb-1.5">
@@ -327,9 +365,19 @@
 										{/if}
 									</div>
 								{/if}
+								<div class="px-4 py-2 border-t border-border-custom bg-surface2/30 flex items-center gap-4">
+									<button
+										class="text-xs text-accent hover:text-accent/80 transition-colors"
+										onclick={(e: MouseEvent) => { e.stopPropagation(); startBranchFrom(exchange.exchange_number); }}
+									>Branch from here</button>
+									<button
+										class="text-xs text-accent hover:text-accent/80 transition-colors"
+										onclick={(e: MouseEvent) => { e.stopPropagation(); goto(`/${$page.params.rp}/sessions/${exchange.session_id}`); }}
+									>View Timeline</button>
+								</div>
 							</div>
 						{/if}
-					</button>
+					</div>
 				{/each}
 			</div>
 
@@ -354,12 +402,20 @@
 			<div class="w-[380px] shrink-0 bg-surface border border-border-custom rounded-[10px] overflow-hidden self-start">
 				<div class="px-3.5 py-2.5 border-b border-border-custom/60 flex items-center justify-between">
 					<SectionLabel>Branch Tree</SectionLabel>
-					<button
-						class="text-xs text-accent hover:text-accent-hover transition-colors"
-						onclick={() => (showCreate = !showCreate)}
-					>
-						{showCreate ? 'Cancel' : '+ New Branch'}
-					</button>
+					<div class="flex items-center gap-2">
+						{#if branches.some(b => b.is_archived)}
+							<button
+								class="text-[11px] transition-colors {showArchived ? 'text-accent' : 'text-text-dim hover:text-text'}"
+								onclick={() => (showArchived = !showArchived)}
+							>{showArchived ? 'Hide archived' : 'Show archived'}</button>
+						{/if}
+						<button
+							class="text-xs text-accent hover:text-accent-hover transition-colors"
+							onclick={() => (showCreate = !showCreate)}
+						>
+							{showCreate ? 'Cancel' : '+ New Branch'}
+						</button>
+					</div>
 				</div>
 
 				<!-- Create branch form -->
@@ -369,6 +425,31 @@
 						<InputField bind:value={newDesc} placeholder="Description (optional)" />
 						<SelectField bind:value={newFrom} placeholder="Branch from: current"
 							options={branches.map(b => ({value: b.name, label: b.name}))} />
+						{#if newExchangeNum != null && newExchangeNum > 0}
+							<div class="flex items-center gap-2 text-xs">
+								<span class="text-text-dim">Branch point:</span>
+								<span class="text-text font-medium">Exchange #{newExchangeNum}</span>
+								<button
+									class="text-text-dim hover:text-text transition-colors"
+									onclick={() => (newExchangeNum = null)}
+									title="Branch from latest instead"
+								>&times;</button>
+							</div>
+						{:else if newExchangeNum === 0}
+							<div class="flex items-center gap-2 text-xs">
+								<span class="text-text-dim">Branch point:</span>
+								<span class="text-accent font-medium">Fresh start (no history)</span>
+								<button
+									class="text-text-dim hover:text-text transition-colors"
+									onclick={() => (newExchangeNum = null)}
+									title="Branch from latest instead"
+								>&times;</button>
+							</div>
+						{:else}
+							<div class="flex items-center gap-2 text-xs text-text-dim">
+								<span>Branch point: latest exchange</span>
+							</div>
+						{/if}
 						<Btn primary small onclick={handleCreateBranch} disabled={creating || !newName.trim()}>{creating ? 'Creating...' : 'Create Branch'}</Btn>
 					</div>
 				{/if}
@@ -436,7 +517,7 @@
 
 								<!-- Children with warm connector line -->
 								{#if children.length > 0 && !collapsedBranches[branch.name]}
-									<div class="ml-7" style="border-left: 1.5px solid var(--color-warm-border, rgba(196,149,106,0.3))">
+									<div class="ml-7" style="border-left: 1.5px solid var(--color-warm-border)">
 										<!-- children rendered by the outer each loop -->
 									</div>
 								{/if}
@@ -445,12 +526,12 @@
 							<!-- Checkpoints (expanded inline) -->
 							{#if expandedBranch === branch.name}
 								<div class="rounded-lg border px-4 py-3 space-y-1.5 ml-6 mb-1"
-									style="margin-left: {depth * 20 + 24}px; border-color: var(--color-gold-border, rgba(184,159,106,0.35)); background: var(--color-gold-soft, rgba(184,159,106,0.12))">
+									style="margin-left: {depth * 20 + 24}px; border-color: var(--color-gold-border); background: var(--color-gold-soft)">
 									<SectionLabel>Checkpoints</SectionLabel>
 									{#if checkpointMap[branch.name]?.length > 0}
 										{#each checkpointMap[branch.name] as cp}
 											<div class="flex items-center gap-2 text-xs py-1 group/cp">
-												<span style="color: var(--color-warm-dark, #a87e58)">&#9670;</span>
+												<span style="color: var(--color-warm-deep)">&#9670;</span>
 												<span class="text-text flex-1 truncate" title={cp.description ?? cp.name}>{cp.name}</span>
 												<span class="text-text-dim shrink-0 font-mono">#{cp.exchange_number}</span>
 												<span class="text-text-dim shrink-0">{fmt(cp.created_at)}</span>
@@ -475,7 +556,7 @@
 													focus:outline-none focus:ring-1 focus:ring-accent" />
 											<div class="flex gap-1.5">
 												<button
-													class="flex-1 bg-accent text-white text-xs py-1.5 rounded-lg disabled:opacity-50"
+													class="flex-1 bg-accent text-text-on-accent text-xs py-1.5 rounded-lg disabled:opacity-50"
 													onclick={(e: MouseEvent) => { e.stopPropagation(); handleCreateCheckpoint(branch.name); }}
 													disabled={creatingCp || !cpName.trim()}
 												>{creatingCp ? '...' : 'Save'}</button>
@@ -510,6 +591,9 @@
 									{#snippet badges()}
 										{#if branch.is_active}
 											<Badge color="var(--color-success)" bg="var(--color-success-soft)">active</Badge>
+										{/if}
+										{#if branch.is_archived}
+											<Badge color="var(--color-text-dim)" bg="var(--color-surface2)">archived</Badge>
 										{/if}
 									{/snippet}
 								</PageHeader>
@@ -549,7 +633,7 @@
 								<div class="flex gap-1.5 flex-wrap mt-2">
 									{#each checkpointMap[selectedBranchNode.name] as cp}
 										<div class="px-3 py-1.5 rounded-lg text-xs border"
-											style="border-color: var(--color-gold-border, rgba(184,159,106,0.35)); background: var(--color-gold-soft, rgba(184,159,106,0.12)); color: var(--color-warm-dark, #a87e58)"
+											style="border-color: var(--color-gold-border); background: var(--color-gold-soft); color: var(--color-warm-deep)"
 										>&#9670; {cp.name}</div>
 									{/each}
 								</div>
@@ -563,6 +647,11 @@
 								<Btn small onclick={() => selectedBranchNode && handleExpandBranch(selectedBranchNode.name)}>
 									{expandedBranch === selectedBranchNode.name ? 'Hide Checkpoints' : 'View Checkpoints'}
 								</Btn>
+								{#if !selectedBranchNode.is_active}
+									<Btn small onclick={() => selectedBranchNode && handleArchiveBranch(selectedBranchNode, !selectedBranchNode.is_archived)}>
+										{selectedBranchNode.is_archived ? "Unarchive" : "Archive"}
+									</Btn>
+								{/if}
 								<Btn small onclick={() => (selectedBranchNode = null)}>Close</Btn>
 							</div>
 						</div>
@@ -589,7 +678,7 @@
 			</p>
 			<div class="flex gap-3">
 				<button
-					class="flex-1 bg-error hover:bg-error/80 text-white text-sm font-medium py-2 rounded-lg transition-colors"
+					class="flex-1 bg-error hover:bg-error/80 text-text-on-accent text-sm font-medium py-2 rounded-lg transition-colors"
 					onclick={handleRestore}
 				>Restore</button>
 				<button

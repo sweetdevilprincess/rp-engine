@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from rp_engine.database import Database
 from rp_engine.models.analysis import TimeAdvanceResponse
 from rp_engine.models.state import SceneUpdate
+from rp_engine.services.state_entry_resolver import latest_scene_state
 from rp_engine.services.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
@@ -194,12 +195,7 @@ class TimestampTracker:
         If override_minutes is set, skip activity detection.
         """
         # Load current timestamp from CoW scene_state_entries
-        row = await self.db.fetch_one(
-            """SELECT in_story_timestamp FROM scene_state_entries
-               WHERE rp_folder = ? AND branch = ?
-               ORDER BY exchange_number DESC LIMIT 1""",
-            [rp_folder, branch],
-        )
+        row = await latest_scene_state(self.db, rp_folder, branch)
         prev_ts_str = row["in_story_timestamp"] if row else None
 
         if not prev_ts_str:

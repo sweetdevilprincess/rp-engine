@@ -23,6 +23,12 @@ export async function updateCard(type: string, name: string, body: StoryCardUpda
 	});
 }
 
+export async function deleteCard(type: string, name: string): Promise<{ name: string; card_type: string; file_deleted: boolean }> {
+	return apiFetch(`/api/cards/${encodeURIComponent(type)}/${encodeURIComponent(name)}`, {
+		method: 'DELETE',
+	});
+}
+
 export async function reindex(): Promise<ReindexResponse> {
 	return apiFetch<ReindexResponse>('/api/cards/reindex', { method: 'POST' });
 }
@@ -58,4 +64,15 @@ export async function validateCard(card_type: string, frontmatter: Record<string
 
 export async function getSchema(card_type: string): Promise<unknown> {
 	return apiFetch(`/api/cards/schema/${encodeURIComponent(card_type)}`);
+}
+
+export async function generateCardName(
+	cardType: string,
+	hints?: string,
+	count?: number,
+): Promise<{ suggestions: string[]; card_type: string }> {
+	return apiFetch('/api/cards/generate-name', {
+		method: 'POST',
+		body: JSON.stringify({ card_type: cardType, hints: hints ?? '', count: count ?? 5 }),
+	});
 }

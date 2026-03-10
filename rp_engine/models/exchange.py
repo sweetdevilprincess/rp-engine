@@ -52,8 +52,98 @@ class ExchangeDetail(BaseModel):
     analysis_status: str = "pending"
     created_at: str
     metadata: dict | None = None
+    has_variants: bool = False
+    variant_count: int = 0
+    continue_count: int = 0
+    is_bookmarked: bool = False
+    bookmark_name: str | None = None
+    has_annotations: bool = False
+    annotation_count: int = 0
 
 
 class ExchangeListResponse(BaseModel):
     exchanges: list[ExchangeDetail]
+    total_count: int
+
+
+# --- Search ---
+
+class ExchangeSearchHit(BaseModel):
+    exchange_number: int
+    exchange_id: int
+    user_message_snippet: str
+    assistant_response_snippet: str
+    relevance_score: float
+    timestamp: str
+    session_id: str | None = None
+    npcs_mentioned: list[str] | None = None
+    is_bookmarked: bool = False
+    bookmark_name: str | None = None
+    annotation_count: int = 0
+
+
+class ExchangeSearchResponse(BaseModel):
+    query: str
+    mode: str
+    total_results: int
+    results: list[ExchangeSearchHit]
+
+
+# --- Bookmarks ---
+
+class BookmarkCreate(BaseModel):
+    name: str | None = None
+    note: str | None = None
+    color: str = "default"
+
+
+class BookmarkUpdate(BaseModel):
+    name: str | None = None
+    note: str | None = None
+    color: str | None = None
+
+
+class BookmarkResponse(BaseModel):
+    id: int
+    exchange_number: int
+    exchange_id: int
+    name: str
+    note: str | None = None
+    color: str = "default"
+    created_at: str
+
+
+class BookmarkListResponse(BaseModel):
+    bookmarks: list[BookmarkResponse]
+    total_count: int
+
+
+# --- Annotations ---
+
+class AnnotationCreate(BaseModel):
+    content: str
+    annotation_type: str = "note"
+    include_in_context: bool = False
+
+
+class AnnotationUpdate(BaseModel):
+    content: str | None = None
+    annotation_type: str | None = None
+    include_in_context: bool | None = None
+
+
+class AnnotationResponse(BaseModel):
+    id: int
+    exchange_number: int
+    exchange_id: int
+    content: str
+    annotation_type: str = "note"
+    include_in_context: bool = False
+    resolved: bool = False
+    created_at: str
+    updated_at: str | None = None
+
+
+class AnnotationListResponse(BaseModel):
+    annotations: list[AnnotationResponse]
     total_count: int

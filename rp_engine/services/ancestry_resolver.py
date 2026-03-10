@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 
 from rp_engine.database import Database
-from rp_engine.utils.json_helpers import safe_parse_json
+from rp_engine.utils.lru_cache import LRUCache
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class AncestryResolver:
     def __init__(self, db: Database) -> None:
         self.db = db
         # Cache: (rp_folder, branch) -> [(branch, max_exchange), ...]
-        self._ancestry_cache: dict[tuple[str, str], list[tuple[str, int]]] = {}
+        self._ancestry_cache: LRUCache[tuple[str, str], list[tuple[str, int]]] = LRUCache(maxsize=64)
 
     # ===================================================================
     # Ancestry Chain
@@ -49,8 +49,9 @@ class AncestryResolver:
         Each subsequent entry is a parent with max_exchange = branch_point_exchange.
         """
         cache_key = (rp_folder, branch)
-        if cache_key in self._ancestry_cache:
-            return self._ancestry_cache[cache_key]
+        cached = self._ancestry_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         chain: list[tuple[str, int]] = []
         current = branch
@@ -80,7 +81,7 @@ class AncestryResolver:
             chain.append((parent, branch_point))
             current = parent
 
-        self._ancestry_cache[cache_key] = chain
+        self._ancestry_cache.put(cache_key, chain)
         return chain
 
     def invalidate_cache(self, rp_folder: str | None = None, branch: str | None = None) -> None:
@@ -98,7 +99,7 @@ class AncestryResolver:
             if k[0] == rp_folder and (branch is None or k[1] == branch)
         ]
         for k in keys_to_remove:
-            del self._ancestry_cache[k]
+            self._ancestry_cache.pop(k)
 
     # ===================================================================
     # Generic Resolution (single latest entry)
@@ -248,64 +249,37 @@ class AncestryResolver:
     ) -> dict:
         """Resolve current trust between two characters.
 
-        Uses the trust shortcut: baseline + SUM(modifications on current branch).
-        No full ancestry walk needed for current value.
+        Delegates to the consolidated resolve_trust_for_pair utility,
+        then enriches with source_branch/source_exchange metadata.
 
         Returns dict with: baseline_score, branch_modifications_sum, live_score,
         trust_stage, source_branch, source_exchange.
         """
-        from rp_engine.utils.trust import trust_stage
+        from rp_engine.utils.trust import resolve_trust_for_pair
 
-        # 1. Get baseline for this branch
-        baseline_row = await self.db.fetch_one(
-            """SELECT * FROM trust_baselines
-               WHERE character_a = ? AND character_b = ? AND rp_folder = ? AND branch = ?""",
-            [char_a, char_b, rp_folder, branch],
+        resolution = await resolve_trust_for_pair(
+            self.db, char_a, char_b, rp_folder, branch
         )
 
+        # Look up audit metadata from the baseline row (if any)
+        source_branch = None
+        source_exchange = None
+        baseline_row = await self.db.fetch_one(
+            """SELECT source_branch, source_exchange FROM trust_baselines
+               WHERE rp_folder = ? AND branch = ?
+                 AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
+                   OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
+            [rp_folder, branch, char_a, char_b, char_b, char_a],
+        )
         if baseline_row:
-            baseline = baseline_row.get("baseline_score") or 0
             source_branch = baseline_row.get("source_branch")
             source_exchange = baseline_row.get("source_exchange")
-        else:
-            # No baseline — fall back to card's initial_trust_score
-            card_row = await self.db.fetch_one(
-                """SELECT frontmatter FROM story_cards
-                   WHERE rp_folder = ? AND LOWER(name) = LOWER(?)
-                     AND card_type IN ('character', 'npc')""",
-                [rp_folder, char_a],
-            )
-            baseline = 0
-            if card_row and card_row.get("frontmatter"):
-                fm = safe_parse_json(card_row["frontmatter"])
-                # Check npc_trust_levels first, then initial_trust_score
-                trust_levels = fm.get("npc_trust_levels", {})
-                if isinstance(trust_levels, dict):
-                    # Case-insensitive lookup
-                    for key, val in trust_levels.items():
-                        if key.lower() == char_b.lower():
-                            baseline = val
-                            break
-                if baseline == 0:
-                    baseline = fm.get("initial_trust_score", 0)
-            source_branch = None
-            source_exchange = None
-
-        # 2. Sum modifications on THIS branch only
-        mod_sum = await self.db.fetch_val(
-            """SELECT COALESCE(SUM(change), 0) FROM trust_modifications
-               WHERE character_a = ? AND character_b = ? AND rp_folder = ? AND branch = ?""",
-            [char_a, char_b, rp_folder, branch],
-        )
-        mod_sum = mod_sum or 0
-
-        live = baseline + mod_sum
 
         return {
-            "baseline_score": baseline,
-            "branch_modifications_sum": mod_sum,
-            "live_score": live,
-            "trust_stage": trust_stage(live),
+            "baseline_score": resolution.baseline,
+            "branch_modifications_sum": resolution.modification_sum,
+            "live_score": resolution.live_score,
+            "trust_stage": resolution.stage,
             "source_branch": source_branch,
             "source_exchange": source_exchange,
         }

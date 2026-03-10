@@ -32,6 +32,15 @@ export async function switchBranch(name: string, rp_folder: string): Promise<Bra
 	});
 }
 
+export async function archiveBranch(name: string, rp_folder: string, archived = true): Promise<BranchInfo> {
+	return apiFetch<BranchInfo>(`/api/branches/${encodeURIComponent(name)}/archive`, {
+		method: 'PATCH',
+		body: JSON.stringify({ archived }),
+		params: { rp_folder },
+		skipRPContext: true,
+	});
+}
+
 export async function listCheckpoints(branch_name: string, rp_folder: string): Promise<CheckpointInfo[]> {
 	return apiFetch<CheckpointInfo[]>(`/api/branches/${encodeURIComponent(branch_name)}/checkpoints`, {
 		params: { rp_folder },

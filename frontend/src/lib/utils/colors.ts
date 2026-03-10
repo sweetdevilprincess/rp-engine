@@ -88,6 +88,22 @@ export function trustStageColor(stage: string | null): string {
 	return `color: ${c.text}; background: ${c.bg};`;
 }
 
+// -- Behavioral modifier colors --
+export function modifierColors(mod: string): { bg: string; text: string } {
+	switch (mod) {
+		case 'OBSESSIVE':      return { bg: 'rgba(139,111,192,0.12)', text: '#7c5eb8' };  // purple
+		case 'SADISTIC':       return { bg: 'rgba(184,92,85,0.15)',   text: '#a04d48' };   // red
+		case 'PARANOID':       return { bg: 'rgba(184,126,106,0.15)', text: '#a06040' };   // burnt orange
+		case 'FANATICAL':      return { bg: 'rgba(192,126,128,0.15)', text: '#a06068' };   // rose
+		case 'NARCISSISTIC':   return { bg: 'rgba(192,154,94,0.15)',  text: '#906e40' };   // amber
+		case 'SOCIOPATHIC':    return { bg: 'rgba(120,130,160,0.15)', text: '#505878' };   // slate
+		case 'ADDICTED':       return { bg: 'rgba(150,120,184,0.12)', text: '#7858a0' };   // lavender
+		case 'HONOR_BOUND':    return { bg: 'rgba(94,130,168,0.12)',  text: '#4a7095' };   // steel blue
+		case 'GRIEF_CONSUMED': return { bg: 'rgba(140,129,118,0.15)', text: '#6e6560' };   // warm gray
+		default:               return { bg: 'var(--color-bg-subtle)', text: 'var(--color-text-dim)' };
+	}
+}
+
 // -- Trust score -> color --
 export function trustScoreColor(score: number): string {
 	if (score >= 75) return 'var(--color-accent)';
@@ -116,6 +132,16 @@ export function significanceColor(sig: string | null): string {
 	const c = significanceColors(sig);
 	return `color: ${c.text}; background: ${c.bg};`;
 }
+
+// -- Timeline entry type colors (session timeline) --
+export const TIMELINE_TYPE_COLORS: Record<string, { bg: string; text: string; dot: string; label: string }> = {
+	trust_change:        { bg: 'rgba(94,130,168,0.10)',  text: '#4a7095', dot: '#5e82a8', label: 'Trust Change' },
+	event:               { bg: 'rgba(184,159,106,0.10)', text: '#967e48', dot: '#b89f6a', label: 'Event' },
+	thread_update:       { bg: 'rgba(139,111,192,0.10)', text: '#7c5eb8', dot: '#8b6fc0', label: 'Thread Update' },
+	scene_change:        { bg: 'rgba(109,140,94,0.10)',  text: '#5a7a4d', dot: '#6d8c5e', label: 'Scene Change' },
+	character_update:    { bg: 'rgba(94,168,160,0.10)',  text: '#3a8880', dot: '#5ea8a0', label: 'Character Update' },
+	continuity_warning:  { bg: 'rgba(184,126,106,0.10)', text: '#a06040', dot: '#b87e6a', label: 'Continuity Warning' },
+};
 
 // -- Edge type colors for ForceGraph (muted warm palette) --
 export const EDGE_TYPE_COLORS: Record<string, string> = {

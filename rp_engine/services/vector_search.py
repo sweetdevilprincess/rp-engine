@@ -21,6 +21,7 @@ import numpy as np
 
 from rp_engine.config import SearchConfig
 from rp_engine.database import PRIORITY_REINDEX, Database
+from rp_engine.utils.lru_cache import LRUCache
 from rp_engine.utils.text import chunk_text, sanitize_fts_query
 
 logger = logging.getLogger(__name__)
@@ -50,13 +51,17 @@ class VectorSearch:
         config: SearchConfig,
         embed_fn: Callable | None = None,
         api_key: str | None = None,
+        embedding_model: str = "unknown",
     ) -> None:
         self.db = db
         self.config = config
         self._embed_fn = embed_fn or self._default_embed
         self._api_key = api_key
-        # Cache: rp_folder → (ids, matrix, norms)
-        self._vector_cache: dict[str, tuple[list[int], np.ndarray, np.ndarray]] = {}
+        self._embedding_model = embedding_model
+        # LRU cache: rp_folder → (ids, matrix, norms)
+        self._vector_cache: LRUCache[str, tuple[list[int], np.ndarray, np.ndarray]] = LRUCache(
+            maxsize=config.vector_cache_max
+        )
 
     async def search(
         self,
@@ -76,7 +81,7 @@ class VectorSearch:
                     np.array(query_vec[0], dtype=np.float32), rp_folder
                 )
         except Exception as e:
-            logger.warning("Vector search failed, falling back to BM25 only: %s", e)
+            logger.warning("Vector search failed (model=%s), falling back to BM25 only: %s", self._embedding_model, e)
 
         # BM25 search
         try:
@@ -135,7 +140,7 @@ class VectorSearch:
         try:
             embeddings = await self._embed_fn(chunks)
         except Exception as e:
-            logger.warning("Embedding failed for %s, storing without vectors: %s", file_path, e)
+            logger.warning("Embedding failed for %s (model=%s), storing without vectors: %s", file_path, self._embedding_model, e)
             embeddings = None
 
         import json
@@ -224,6 +229,10 @@ class VectorSearch:
         self._vector_cache.pop(rp_folder, None)
         return {"files": total_files, "chunks": total_chunks}
 
+    def clear_cache(self) -> None:
+        """Clear the vector cache (used during shutdown)."""
+        self._vector_cache.clear()
+
     # ----- Internal methods -----
 
     async def _vector_search(
@@ -232,10 +241,11 @@ class VectorSearch:
         """Cosine similarity against cached embedding matrix."""
         cache_key = rp_folder or "__all__"
 
-        if cache_key not in self._vector_cache:
-            await self._load_vectors(cache_key, rp_folder)
-
         cache = self._vector_cache.get(cache_key)
+        if cache is None:
+            await self._load_vectors(cache_key, rp_folder)
+            cache = self._vector_cache.get(cache_key)
+
         if cache is None or len(cache[0]) == 0:
             return []
 
@@ -326,7 +336,7 @@ class VectorSearch:
             )
 
         if not rows:
-            self._vector_cache[cache_key] = ([], np.array([]), np.array([]))
+            self._vector_cache.put(cache_key, ([], np.array([]), np.array([])))
             return
 
         ids: list[int] = []
@@ -342,12 +352,12 @@ class VectorSearch:
                 continue
 
         if not vecs:
-            self._vector_cache[cache_key] = ([], np.array([]), np.array([]))
+            self._vector_cache.put(cache_key, ([], np.array([]), np.array([])))
             return
 
         matrix = np.stack(vecs)
         norms = np.linalg.norm(matrix, axis=1)
-        self._vector_cache[cache_key] = (ids, matrix, norms)
+        self._vector_cache.put(cache_key, (ids, matrix, norms))
 
     async def _default_embed(self, texts: list[str]) -> list[list[float]]:
         """Minimal embedding via httpx + OpenRouter. Falls back to error."""

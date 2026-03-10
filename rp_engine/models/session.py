@@ -31,18 +31,6 @@ class NewEntity(BaseModel):
     first_mention_exchange: int | None = None
 
 
-class RelationshipArc(BaseModel):
-    characters: list[str]
-    arc_summary: str
-
-
-class CharacterStateChange(BaseModel):
-    character: str
-    field: str
-    old_value: str | None = None
-    new_value: str | None = None
-
-
 class SceneProgression(BaseModel):
     first_timestamp: str | None = None
     last_timestamp: str | None = None
@@ -60,10 +48,25 @@ class SessionEndSummary(BaseModel):
     significant_events: list[str] = []
     trust_changes: list[TrustChange] = []
     new_entities: list[NewEntity] = []
-    relationship_arcs: list[RelationshipArc] = []
-    character_state_changes: list[CharacterStateChange] = []
     scene_progression: SceneProgression | None = None
     plot_thread_status: list[PlotThreadStatus] = []
+
+
+class SessionTimelineEntry(BaseModel):
+    type: str  # "trust_change" | "event" | "thread_update" | "character_update" | "scene_change" | "continuity_warning"
+    exchange_number: int | None = None
+    timestamp: str | None = None
+    title: str
+    detail: dict = {}
+    characters: list[str] = []
+
+
+class SessionTimelineResponse(BaseModel):
+    session_id: str
+    branch: str
+    exchange_range: tuple[int, int]
+    entries: list[SessionTimelineEntry]
+    entry_counts: dict[str, int] = {}
 
 
 class UpdateSessionBody(BaseModel):

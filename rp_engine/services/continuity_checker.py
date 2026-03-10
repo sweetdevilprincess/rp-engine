@@ -227,7 +227,7 @@ If no contradictions, respond: {{"contradictions": []}}"""
         if content.startswith("```"):
             lines = content.split("\n")
             content = "\n".join(
-                l for l in lines if not l.strip().startswith("```")
+                line for line in lines if not line.strip().startswith("```")
             )
 
         try:

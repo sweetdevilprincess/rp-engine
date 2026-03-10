@@ -9,6 +9,7 @@ Combines three inputs:
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from rp_engine.config import ChatConfig
@@ -18,6 +19,13 @@ from rp_engine.services.guidelines_service import GuidelinesService
 from rp_engine.utils.frontmatter import parse_file
 
 logger = logging.getLogger(__name__)
+
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _strip_comments(text: str) -> str:
+    """Remove HTML comments from markdown text."""
+    return _COMMENT_RE.sub("", text).strip()
 
 
 class PromptAssembler:
@@ -132,12 +140,11 @@ class PromptAssembler:
         """Build all static sections for a system prompt."""
         sections: dict = {}
 
-        sections["writing_principles"] = self._build_writing_section()
-
-        # RP-specific guidelines
+        # RP-specific guidelines (parsed first — toggles control other sections)
+        frontmatter = None
         guidelines_path = self.vault_root / rp_folder / "RP State" / "Story_Guidelines.md"
         if guidelines_path.exists():
-            frontmatter, _ = parse_file(guidelines_path)
+            frontmatter, body = parse_file(guidelines_path)
             if frontmatter:
                 sections["rp_guidelines"] = {
                     "pov_mode": frontmatter.get("pov_mode"),
@@ -146,10 +153,24 @@ class PromptAssembler:
                     "tense": frontmatter.get("tense"),
                     "tone": frontmatter.get("tone"),
                     "scene_pacing": frontmatter.get("scene_pacing"),
+                    "response_length": frontmatter.get("response_length"),
                 }
+            if body and body.strip():
+                cleaned = _strip_comments(body)
+                if cleaned:
+                    sections["rp_guidelines_body"] = cleaned
 
-        sections["npc_framework"] = self._build_npc_framework_section()
-        sections["output_format"] = self._build_output_format_section()
+        # Auto-section toggles from frontmatter (default: all on)
+        include_writing = frontmatter.get("include_writing_principles", True) if frontmatter else True
+        include_npc = frontmatter.get("include_npc_framework", True) if frontmatter else True
+        include_output = frontmatter.get("include_output_format", True) if frontmatter else True
+
+        if include_writing:
+            sections["writing_principles"] = self._build_writing_section()
+        if include_npc:
+            sections["npc_framework"] = self._build_npc_framework_section()
+        if include_output:
+            sections["output_format"] = self._build_output_format_section()
 
         return sections
 
@@ -186,24 +207,30 @@ class PromptAssembler:
 
         # --- RP Guidelines ---
         rp_guide = sections.get("rp_guidelines")
-        if rp_guide:
+        body = sections.get("rp_guidelines_body")
+        if rp_guide or body:
             parts.append("\n\n# RP Guidelines\n")
-            if rp_guide.get("pov_mode"):
-                parts.append(f"- **POV Mode:** {rp_guide['pov_mode']}")
-            if rp_guide.get("dual_characters"):
-                chars = ", ".join(rp_guide["dual_characters"])
-                parts.append(f"- **Dual Characters:** {chars}")
-            if rp_guide.get("narrative_voice"):
-                parts.append(f"- **Narrative Voice:** {rp_guide['narrative_voice']}")
-            if rp_guide.get("tense"):
-                parts.append(f"- **Tense:** {rp_guide['tense']}")
-            if rp_guide.get("tone"):
-                tone = rp_guide["tone"]
-                if isinstance(tone, list):
-                    tone = ", ".join(tone)
-                parts.append(f"- **Tone:** {tone}")
-            if rp_guide.get("scene_pacing"):
-                parts.append(f"- **Scene Pacing:** {rp_guide['scene_pacing']}")
+            # Compact frontmatter metadata line
+            if rp_guide:
+                meta_parts = []
+                for key, label in [
+                    ("pov_mode", "POV"), ("narrative_voice", "Voice"),
+                    ("tense", "Tense"), ("scene_pacing", "Pacing"),
+                    ("response_length", "Length"),
+                ]:
+                    if rp_guide.get(key):
+                        meta_parts.append(f"{label}: {rp_guide[key]}")
+                if rp_guide.get("tone"):
+                    tone = rp_guide["tone"]
+                    meta_parts.append(f"Tone: {', '.join(tone) if isinstance(tone, list) else tone}")
+                if rp_guide.get("dual_characters"):
+                    meta_parts.append(f"Dual: {', '.join(rp_guide['dual_characters'])}")
+                if meta_parts:
+                    parts.append(" | ".join(meta_parts))
+            # Full body content (user's custom prompt instructions)
+            if body:
+                parts.append("\n")
+                parts.append(body)
 
         # --- NPC Framework ---
         npc = sections.get("npc_framework")
@@ -292,6 +319,31 @@ class PromptAssembler:
                     state_info.append(f"conditions: {', '.join(state.conditions)}")
                 info_str = " | ".join(state_info) if state_info else "unknown state"
                 dynamic.append(f"- **{name}:** {info_str}")
+
+        # Custom State (PC + Scene)
+        if context_response.custom_state:
+            pc_blocks = [b for b in context_response.custom_state if b.belongs_to]
+            scene_blocks = [b for b in context_response.custom_state if not b.belongs_to]
+
+            if pc_blocks:
+                pc_name = pc_blocks[0].belongs_to
+                dynamic.append(f"\n\n# {pc_name} — Tracked State\n")
+                for block in pc_blocks:
+                    if block.display_format == "stat_block":
+                        dynamic.append(block.content)
+                    elif block.display_format == "inventory_list":
+                        dynamic.append(f"## {block.schema_name}")
+                        dynamic.append(block.content)
+                    elif block.display_format == "note":
+                        dynamic.append(f"*{block.schema_name}:* {block.content}")
+
+            if scene_blocks:
+                dynamic.append("\n\n# Scene — Tracked State\n")
+                for block in scene_blocks:
+                    if block.display_format == "stat_block":
+                        dynamic.append(block.content)
+                    elif block.display_format == "note":
+                        dynamic.append(f"*{block.schema_name}:* {block.content}")
 
         # Active NPCs (briefs)
         if context_response.npc_briefs:

@@ -9,30 +9,33 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import Request
+from fastapi import Depends, HTTPException, Request
 
+from rp_engine.config import get_config
 from rp_engine.container import ServiceContainer
 from rp_engine.database import Database
 from rp_engine.services.analysis_pipeline import AnalysisPipeline
-from rp_engine.services.auto_save import AutoSaveManager
-from rp_engine.services.chat_manager import ChatManager
-from rp_engine.services.recap_builder import RecapBuilder
-from rp_engine.services.summary_builder import SummaryBuilder
 from rp_engine.services.ancestry_resolver import AncestryResolver
+from rp_engine.services.auto_save import AutoSaveManager
 from rp_engine.services.branch_manager import BranchManager
 from rp_engine.services.card_indexer import CardIndexer
+from rp_engine.services.chat_manager import ChatManager
 from rp_engine.services.context_engine import ContextEngine
 from rp_engine.services.custom_state_manager import CustomStateManager
+from rp_engine.services.diagnostic_logger import DiagnosticLogger
 from rp_engine.services.entity_extractor import EntityExtractor
+from rp_engine.services.exchange_writer import ExchangeWriter
 from rp_engine.services.graph_resolver import GraphResolver
 from rp_engine.services.guidelines_service import GuidelinesService
-from rp_engine.services.npc_brief_builder import NPCBriefBuilder
-from rp_engine.services.prompt_assembler import PromptAssembler
 from rp_engine.services.llm_client import LLMClient
+from rp_engine.services.npc_brief_builder import NPCBriefBuilder
 from rp_engine.services.npc_engine import NPCEngine
+from rp_engine.services.prompt_assembler import PromptAssembler
+from rp_engine.services.recap_builder import RecapBuilder
 from rp_engine.services.response_analyzer import ResponseAnalyzer
 from rp_engine.services.scene_classifier import SceneClassifier
 from rp_engine.services.state_manager import StateManager
+from rp_engine.services.summary_builder import SummaryBuilder
 from rp_engine.services.thread_tracker import ThreadTracker
 from rp_engine.services.timestamp_tracker import TimestampTracker
 from rp_engine.services.trigger_evaluator import TriggerEvaluator
@@ -124,6 +127,10 @@ def get_analysis_pipeline(request: Request) -> AnalysisPipeline | None:
     return getattr(request.app.state, "analysis_pipeline", None)
 
 
+def get_exchange_writer(request: Request) -> ExchangeWriter:
+    return _get(request, "exchange_writer")
+
+
 def get_branch_manager(request: Request) -> BranchManager:
     return _get(request, "branch_manager")
 
@@ -177,3 +184,50 @@ def get_continuity_checker(request: Request):
     if container is not None:
         return getattr(container, "continuity_checker", None)
     return getattr(request.app.state, "continuity_checker", None)
+
+
+def get_diagnostic_logger(request: Request) -> DiagnosticLogger:
+    return _get(request, "diagnostic_logger")
+
+
+# ── Chat mode guard ────────────────────────────────────────────────────
+
+
+def require_chat_mode(expected: str):
+    """Dependency that rejects requests if the configured chat mode doesn't match."""
+    async def _guard():
+        cfg = get_config()
+        actual = cfg.llm.mode.chat
+        if actual != expected:
+            other = "sdk" if expected == "provider" else "provider"
+            endpoint = "/api/chat/agent" if actual == "sdk" else "/api/chat"
+            raise HTTPException(
+                status_code=409,
+                detail=f"Chat mode is '{actual}'. Use {endpoint} instead.",
+            )
+    return _guard
+
+
+# ── Session resolution ──────────────────────────────────────────────────
+
+
+async def resolve_active_session(
+    db: Database, rp_folder: str, branch: str,
+) -> tuple[str, str, str]:
+    """Resolve the active session for a given RP folder and branch.
+
+    Returns (rp_folder, branch, session_id).
+    Raises HTTPException 400 if no active session exists.
+    """
+    session = await db.fetch_one(
+        """SELECT id, rp_folder, branch FROM sessions
+           WHERE ended_at IS NULL AND rp_folder = ? AND branch = ?
+           ORDER BY started_at DESC LIMIT 1""",
+        [rp_folder, branch],
+    )
+    if not session:
+        raise HTTPException(
+            400,
+            detail=f"No active session for {rp_folder}/{branch}. Create one via POST /api/sessions first.",
+        )
+    return session["rp_folder"], session["branch"], session["id"]

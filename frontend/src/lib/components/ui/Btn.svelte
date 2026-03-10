@@ -51,12 +51,12 @@
 	.btn-primary {
 		border: none;
 		background: linear-gradient(135deg, var(--color-accent), var(--color-accent-hover));
-		color: #fff;
+		color: var(--color-text-on-accent);
 		font-weight: 600;
-		box-shadow: 0 2px 8px rgba(109, 140, 94, 0.2);
+		box-shadow: 0 2px 8px var(--color-accent-shadow);
 	}
 	.btn-primary:hover:not(:disabled) {
-		box-shadow: 0 3px 12px rgba(109, 140, 94, 0.3);
+		box-shadow: 0 3px 12px var(--color-accent-shadow-strong);
 	}
 	.btn-secondary {
 		border: 1px solid var(--color-border-custom);

@@ -14,6 +14,7 @@ export interface RPInfo {
   has_story_cards: boolean;
   card_count: number;
   has_guidelines: boolean;
+  has_avatar: boolean;
   branches: string[];
 }
 export interface GuidelinesResponse {
@@ -29,4 +30,61 @@ export interface GuidelinesResponse {
   sensitive_themes: string[];
   hard_limits: string | string[] | null;
   response_length: 'short' | 'medium' | 'long' | null;
+  include_writing_principles?: boolean;
+  include_npc_framework?: boolean;
+  include_output_format?: boolean;
+  avatar?: string | null;
+  body?: string | null;
+}
+
+export interface ChunkingConfig {
+  strategy: string;
+  chunk_size: number;
+  chunk_overlap: number;
+}
+
+export interface RechunkResponse {
+  status: string;
+  total_exchanges: number;
+  embedded: number;
+  skipped: number;
+  failed: number;
+}
+
+export interface PromptPreview {
+  system_prompt: string;
+  sections: string[];
+}
+
+export interface ExportRequest {
+  include_optional?: boolean;
+  branches?: string[] | null;
+}
+
+export interface ExportStats {
+  exchange_count: number;
+  session_count: number;
+  card_count: number;
+  branch_count: number;
+  bookmark_count: number;
+  annotation_count: number;
+  variant_count: number;
+}
+
+export interface ImportStats {
+  sessions_imported: number;
+  exchanges_imported: number;
+  branches_imported: number;
+  cards_written: number;
+  trust_modifications_imported: number;
+  bookmarks_imported: number;
+  annotations_imported: number;
+  variants_imported: number;
+  warnings: string[];
+}
+
+export interface ImportResponse {
+  status: string;
+  rp_folder: string;
+  stats: ImportStats;
 }

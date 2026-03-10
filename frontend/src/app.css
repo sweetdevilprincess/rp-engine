@@ -34,13 +34,32 @@
 	--color-gold-soft: rgba(184, 159, 106, 0.12);
 	--color-gold-border: rgba(184, 159, 106, 0.35);
 
+	/* -- Info (steel blue) -- */
+	--color-info: #5e82a8;
+	--color-info-soft: rgba(94, 130, 168, 0.10);
+	--color-info-border: rgba(94, 130, 168, 0.25);
+
+	/* -- Purple (muted violet) -- */
+	--color-purple: #8b6fc0;
+	--color-purple-soft: rgba(139, 111, 192, 0.10);
+	--color-purple-border: rgba(139, 111, 192, 0.25);
+
 	/* -- Semantic -- */
 	--color-success: #6d8c5e;
 	--color-error: #b85c55;
 	--color-warning: #c4956a;
 	--color-error-soft: rgba(184, 92, 85, 0.10);
+	--color-error-border: rgba(184, 92, 85, 0.25);
 	--color-success-soft: rgba(109, 140, 94, 0.10);
 	--color-warning-soft: rgba(196, 149, 106, 0.12);
+
+	/* -- Shadows (for box-shadow where opacity variants are needed) -- */
+	--color-accent-shadow: rgba(109, 140, 94, 0.20);
+	--color-accent-shadow-strong: rgba(109, 140, 94, 0.30);
+	--color-gold-shadow: rgba(184, 159, 106, 0.20);
+
+	/* -- Text on colored backgrounds (buttons, badges) -- */
+	--color-text-on-accent: #ffffff;
 }
 
 :root {
@@ -78,4 +97,278 @@ input:focus, select:focus, textarea:focus {
 
 * {
 	border-color: var(--color-border-custom);
+}
+
+/* ============================================================
+   THEME OVERRIDES
+   Default (no data-theme or data-theme="sage") uses @theme values.
+   Each theme overrides only what differs.
+   ============================================================ */
+
+/* -- Copper: warm parchment, bronze accents -- */
+/* Cozy Neutral Retreat — powder_petal surfaces, light_bronze accent */
+[data-theme="copper"] {
+	--color-bg: #f1e4dc;
+	--color-bg-subtle: #ead7ca;
+	--color-surface: #f8f2ed;
+	--color-surface2: #f1e4dc;
+	--color-border-custom: #ddbea9;
+	--color-border-subtle: #e3cab9;
+	--color-border-warm: #cb997e;
+	--color-text: #2f1d13;
+	--color-text-dim: #6b705c;
+	--color-text-muted: #a5a58d;
+	--color-accent: #cb997e;
+	--color-accent-hover: #b97550;
+	--color-accent-soft: rgba(203, 153, 126, 0.12);
+	--color-accent-border: rgba(203, 153, 126, 0.25);
+	--color-accent-shadow: rgba(203, 153, 126, 0.20);
+	--color-accent-shadow-strong: rgba(203, 153, 126, 0.30);
+	--color-warm: #ddbea9;
+	--color-warm-soft: rgba(221, 190, 169, 0.12);
+	--color-warm-border: rgba(221, 190, 169, 0.30);
+	--color-warm-deep: #8e5739;
+}
+
+/* -- Gold: rich desert warmth -- */
+/* Cozy Neutral Retreat — desert_sand bg, dusty_olive accent, deep bronze depth */
+[data-theme="gold"] {
+	--color-bg: #ddbea9;
+	--color-bg-subtle: #cb997e;
+	--color-surface: #ead7ca;
+	--color-surface-raised: #f1e4dc;
+	--color-surface2: #d6ae99;
+	--color-border-custom: #b97550;
+	--color-border-subtle: #cb997e;
+	--color-border-warm: #8e5739;
+	--color-text: #2f1d13;
+	--color-text-dim: #5f3a26;
+	--color-text-muted: #8e5739;
+	--color-accent: #6b705c;
+	--color-accent-hover: #565a49;
+	--color-accent-soft: rgba(107, 112, 92, 0.15);
+	--color-accent-border: rgba(107, 112, 92, 0.30);
+	--color-accent-shadow: rgba(107, 112, 92, 0.25);
+	--color-accent-shadow-strong: rgba(107, 112, 92, 0.35);
+	--color-warm: #cb997e;
+	--color-warm-soft: rgba(203, 153, 126, 0.15);
+	--color-warm-border: rgba(203, 153, 126, 0.35);
+	--color-warm-deep: #5f3a26;
+	--color-gold: #a5a58d;
+	--color-gold-soft: rgba(165, 165, 141, 0.15);
+	--color-gold-border: rgba(165, 165, 141, 0.35);
+	--color-gold-shadow: rgba(165, 165, 141, 0.25);
+}
+
+/* -- Berry: deep vintage berry — dark theme -- */
+/* mint_cream text, vintage_berry accent, deep_purple depth, midnight_violet surfaces */
+[data-theme="berry"] {
+	--color-bg: #210a1b;
+	--color-bg-subtle: #361f27;
+	--color-surface: #421437;
+	--color-surface-raised: #521945;
+	--color-surface2: #310f29;
+	--color-border-custom: #752646;
+	--color-border-subtle: #6d3f4f;
+	--color-border-warm: #912f56;
+	--color-text: #eaf2ef;
+	--color-text-dim: #e0c9d1;
+	--color-text-muted: #a25e76;
+	--color-accent: #c14074;
+	--color-accent-hover: #d17096;
+	--color-accent-soft: rgba(193, 64, 116, 0.18);
+	--color-accent-border: rgba(193, 64, 116, 0.35);
+	--color-accent-shadow: rgba(193, 64, 116, 0.30);
+	--color-accent-shadow-strong: rgba(193, 64, 116, 0.40);
+	--color-warm: #d984c5;
+	--color-warm-soft: rgba(217, 132, 197, 0.15);
+	--color-warm-border: rgba(217, 132, 197, 0.30);
+	--color-warm-deep: #902c78;
+	--color-gold: #c193a3;
+	--color-gold-soft: rgba(193, 147, 163, 0.15);
+	--color-gold-border: rgba(193, 147, 163, 0.35);
+	--color-gold-shadow: rgba(193, 147, 163, 0.25);
+	--color-info: #aecdc2;
+	--color-info-soft: rgba(174, 205, 194, 0.12);
+	--color-info-border: rgba(174, 205, 194, 0.25);
+	--color-purple: #c646a8;
+	--color-purple-soft: rgba(198, 70, 168, 0.15);
+	--color-purple-border: rgba(198, 70, 168, 0.25);
+	--color-success: #73a996;
+	--color-success-soft: rgba(115, 169, 150, 0.15);
+	--color-error: #d17096;
+	--color-error-soft: rgba(209, 112, 150, 0.15);
+	--color-error-border: rgba(209, 112, 150, 0.25);
+	--color-warning: #d984c5;
+	--color-warning-soft: rgba(217, 132, 197, 0.15);
+}
+
+/* -- Rose: deep mauve blush -- */
+/* Rosy Mauve Delight — pink_mist bg, blush_rose accent, petal_frost cards */
+[data-theme="rose"] {
+	--color-bg: #e1a3b3;
+	--color-bg-subtle: #d57d95;
+	--color-surface: #ecc3ce;
+	--color-surface-raised: #f3dae1;
+	--color-surface2: #e7b5c2;
+	--color-border-custom: #ce6a85;
+	--color-border-subtle: #d57d95;
+	--color-border-warm: #bc3d5f;
+	--color-text: #2f0f18;
+	--color-text-dim: #5e1e2f;
+	--color-text-muted: #8d2e47;
+	--color-accent: #ce6a85;
+	--color-accent-hover: #8d2e47;
+	--color-accent-soft: rgba(206, 106, 133, 0.15);
+	--color-accent-border: rgba(206, 106, 133, 0.30);
+	--color-accent-shadow: rgba(206, 106, 133, 0.25);
+	--color-accent-shadow-strong: rgba(206, 106, 133, 0.35);
+	--color-warm: #db90a4;
+	--color-warm-soft: rgba(219, 144, 164, 0.15);
+	--color-warm-border: rgba(219, 144, 164, 0.35);
+	--color-warm-deep: #5e1e2f;
+	--color-gold: #d57d95;
+	--color-gold-soft: rgba(213, 125, 149, 0.15);
+	--color-gold-border: rgba(213, 125, 149, 0.40);
+	--color-gold-shadow: rgba(213, 125, 149, 0.25);
+}
+
+/* -- Steel: cool blue-grey -- */
+/* pale-sky surfaces, air-force-blue accent, alabaster-grey warmth */
+[data-theme="steel"] {
+	--color-bg: #c2cfd6;
+	--color-bg-subtle: #a3b8c2;
+	--color-surface: #dfe8ec;
+	--color-surface-raised: #f0f3f5;
+	--color-surface2: #bfd1d9;
+	--color-border-custom: #80a3b3;
+	--color-border-subtle: #a3b8c2;
+	--color-border-warm: #546e78;
+	--color-text: #0d1416;
+	--color-text-dim: #29363d;
+	--color-text-muted: #526d7a;
+	--color-accent: #546e78;
+	--color-accent-hover: #3f525a;
+	--color-accent-soft: rgba(84, 110, 120, 0.15);
+	--color-accent-border: rgba(84, 110, 120, 0.30);
+	--color-accent-shadow: rgba(84, 110, 120, 0.25);
+	--color-accent-shadow-strong: rgba(84, 110, 120, 0.35);
+	--color-warm: #99a191;
+	--color-warm-soft: rgba(153, 161, 145, 0.15);
+	--color-warm-border: rgba(153, 161, 145, 0.35);
+	--color-warm-deep: #3d525c;
+	--color-gold: #85a0ad;
+	--color-gold-soft: rgba(133, 160, 173, 0.15);
+	--color-gold-border: rgba(133, 160, 173, 0.40);
+	--color-gold-shadow: rgba(133, 160, 173, 0.25);
+	--color-info: #5e8da1;
+	--color-info-soft: rgba(94, 141, 161, 0.12);
+	--color-info-border: rgba(94, 141, 161, 0.25);
+}
+
+/* -- Sakura: dusty rose blossom -- */
+/* dusty-rose surfaces, iron-grey accent, cherry-blossom warmth, ash-grey gold */
+[data-theme="sakura"] {
+	--color-bg: #e1b7bd;
+	--color-bg-subtle: #d2939d;
+	--color-surface: #f0dbde;
+	--color-surface-raised: #f7edef;
+	--color-surface2: #e1b7bd;
+	--color-border-custom: #c36f7c;
+	--color-border-subtle: #d2939d;
+	--color-border-warm: #903c49;
+	--color-text: #240f12;
+	--color-text-dim: #6c2d37;
+	--color-text-muted: #903c49;
+	--color-accent: #5d6d6f;
+	--color-accent-hover: #465253;
+	--color-accent-soft: rgba(93, 109, 111, 0.15);
+	--color-accent-border: rgba(93, 109, 111, 0.30);
+	--color-accent-shadow: rgba(93, 109, 111, 0.25);
+	--color-accent-shadow-strong: rgba(93, 109, 111, 0.35);
+	--color-warm: #e38291;
+	--color-warm-soft: rgba(227, 130, 145, 0.15);
+	--color-warm-border: rgba(227, 130, 145, 0.35);
+	--color-warm-deep: #53131d;
+	--color-gold: #8ba78c;
+	--color-gold-soft: rgba(139, 167, 140, 0.15);
+	--color-gold-border: rgba(139, 167, 140, 0.40);
+	--color-gold-shadow: rgba(139, 167, 140, 0.25);
+	--color-info: #74888b;
+	--color-info-soft: rgba(116, 136, 139, 0.12);
+	--color-info-border: rgba(116, 136, 139, 0.25);
+}
+
+/* -- Forest: deep mossy woodland -- */
+/* Mossy Woodland Retreat — muted_teal bg, deep_teal accent, charcoal_blue depth */
+[data-theme="forest"] {
+	--color-bg: #84a98c;
+	--color-bg-subtle: #6d9c90;
+	--color-surface: #9cbaa3;
+	--color-surface-raised: #b9cbba;
+	--color-surface2: #84a98c;
+	--color-border-custom: #52796f;
+	--color-border-subtle: #6d9c90;
+	--color-border-warm: #354f52;
+	--color-text: #0a0f10;
+	--color-text-dim: #1c252a;
+	--color-text-muted: #354f52;
+	--color-accent: #354f52;
+	--color-accent-hover: #1f2e30;
+	--color-accent-soft: rgba(53, 79, 82, 0.15);
+	--color-accent-border: rgba(53, 79, 82, 0.30);
+	--color-accent-shadow: rgba(53, 79, 82, 0.25);
+	--color-accent-shadow-strong: rgba(53, 79, 82, 0.35);
+	--color-warm: #a7bea9;
+	--color-warm-soft: rgba(167, 190, 169, 0.15);
+	--color-warm-border: rgba(167, 190, 169, 0.35);
+	--color-warm-deep: #151f20;
+	--color-gold: #cad2c5;
+	--color-gold-soft: rgba(202, 210, 197, 0.15);
+	--color-gold-border: rgba(202, 210, 197, 0.40);
+	--color-gold-shadow: rgba(202, 210, 197, 0.25);
+	--color-success: #52796f;
+}
+
+/* -- Dark: deep charcoal with warm muted accents -- */
+/* Inspired by: Mossy Woodland Retreat dark range + Autumn Leaf Symphony */
+[data-theme="dark"] {
+	--color-bg: #1c2024;
+	--color-bg-subtle: #232830;
+	--color-surface: #272c34;
+	--color-surface-raised: #2e343c;
+	--color-surface2: #202428;
+	--color-border-custom: #3a4248;
+	--color-border-subtle: #323840;
+	--color-border-warm: #4a5258;
+	--color-text: #e8e4dc;
+	--color-text-dim: #9a9690;
+	--color-text-muted: #686460;
+	--color-accent: #7fa070;
+	--color-accent-hover: #6d8e5e;
+	--color-accent-soft: rgba(127, 160, 112, 0.12);
+	--color-accent-border: rgba(127, 160, 112, 0.20);
+	--color-warm: #c4956a;
+	--color-warm-soft: rgba(196, 149, 106, 0.12);
+	--color-warm-border: rgba(196, 149, 106, 0.20);
+	--color-warm-deep: #d4a57a;
+	--color-gold: #c4a870;
+	--color-gold-soft: rgba(196, 168, 112, 0.12);
+	--color-gold-border: rgba(196, 168, 112, 0.25);
+	--color-info: #6a98c0;
+	--color-info-soft: rgba(106, 152, 192, 0.12);
+	--color-info-border: rgba(106, 152, 192, 0.20);
+	--color-purple: #9a80d0;
+	--color-purple-soft: rgba(154, 128, 208, 0.12);
+	--color-purple-border: rgba(154, 128, 208, 0.20);
+	--color-success: #6d9a5e;
+	--color-error: #c46a62;
+	--color-warning: #d4a56a;
+	--color-error-soft: rgba(196, 106, 98, 0.12);
+	--color-error-border: rgba(196, 106, 98, 0.20);
+	--color-success-soft: rgba(109, 154, 94, 0.12);
+	--color-warning-soft: rgba(212, 165, 106, 0.12);
+	--color-accent-shadow: rgba(127, 160, 112, 0.25);
+	--color-accent-shadow-strong: rgba(127, 160, 112, 0.35);
+	--color-gold-shadow: rgba(196, 168, 112, 0.25);
 }

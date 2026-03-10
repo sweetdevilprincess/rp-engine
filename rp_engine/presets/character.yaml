@@ -1,0 +1,67 @@
+name: "Character Tracking"
+description: "General-purpose character state tracking for any RP"
+schemas:
+  - id: inventory
+    category: equipment
+    name: "Inventory"
+    data_type: list
+    belongs_to: character
+    inject_as: inventory_list
+    display_order: 1
+    config:
+      default: []
+
+  - id: notable_items
+    category: equipment
+    name: "Notable Items"
+    data_type: list
+    belongs_to: character
+    inject_as: inventory_list
+    display_order: 2
+    config:
+      default: []
+      description: "Key items, artifacts, or possessions with narrative significance"
+
+  - id: conditions
+    category: status
+    name: "Conditions"
+    data_type: list
+    belongs_to: character
+    inject_as: stat_block
+    display_order: 3
+    config:
+      default: []
+      description: "Active conditions (wounded, poisoned, exhausted, etc.)"
+
+  - id: resources
+    category: resources
+    name: "Resources"
+    data_type: text
+    belongs_to: character
+    inject_as: stat_block
+    display_order: 4
+    config:
+      default: ""
+      description: "Money, supplies, favors owed, etc."
+
+  - id: abilities
+    category: character
+    name: "Abilities"
+    data_type: list
+    belongs_to: character
+    inject_as: hidden
+    display_order: 5
+    config:
+      default: []
+      description: "Known abilities, skills, or powers"
+
+  - id: scene_notes
+    category: meta
+    name: "Notes"
+    data_type: text
+    belongs_to: null
+    inject_as: note
+    display_order: 10
+    config:
+      default: ""
+      description: "Scene or session notes"

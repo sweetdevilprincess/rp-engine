@@ -9,8 +9,6 @@ from pathlib import Path
 
 import yaml
 
-from rp_engine.utils.json_helpers import safe_parse_json
-
 from rp_engine.database import PRIORITY_ANALYSIS, PRIORITY_EXCHANGE, Database
 from rp_engine.models.custom_state import (
     CustomStateSchema,
@@ -19,13 +17,15 @@ from rp_engine.models.custom_state import (
     PresetInfo,
 )
 from rp_engine.services.state_entry_resolver import StateEntryResolver
+from rp_engine.utils.json_helpers import safe_parse_json
+from rp_engine.utils.lru_cache import LRUCache
 
 logger = logging.getLogger(__name__)
 
 PRESETS_DIR = Path(__file__).parent.parent / "presets"
 
 # Module-level preset cache: {file_path: (mtime, parsed_data)}
-_preset_cache: dict[str, tuple[float, dict]] = {}
+_preset_cache: LRUCache[str, tuple[float, dict]] = LRUCache(maxsize=32)
 
 
 def _load_preset(path: Path) -> dict | None:
@@ -36,11 +36,11 @@ def _load_preset(path: Path) -> dict | None:
     except OSError:
         return None
     cached = _preset_cache.get(key)
-    if cached and cached[0] == mtime:
+    if cached is not None and cached[0] == mtime:
         return cached[1]
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        _preset_cache[key] = (mtime, data)
+        _preset_cache.put(key, (mtime, data))
         return data
     except Exception:
         return None
@@ -54,6 +54,11 @@ class CustomStateManager:
         self._resolver = StateEntryResolver(
             db, "custom_state_entries", ["schema_id", "entity_id"]
         )
+        self._branch_manager = None  # Late-bound via configure()
+
+    def configure(self, *, branch_manager) -> None:
+        """Late-bind dependencies that aren't available at construction time."""
+        self._branch_manager = branch_manager
 
     # ===================================================================
     # Schema CRUD
@@ -161,11 +166,14 @@ class CustomStateManager:
         now = datetime.now(UTC).isoformat()
 
         if exchange_number is None:
-            val = await self.db.fetch_val(
-                "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
-                [rp_folder, branch],
-            )
-            exchange_number = val or 0
+            if self._branch_manager:
+                exchange_number = await self._branch_manager.get_latest_exchange_number(rp_folder, branch)
+            else:
+                val = await self.db.fetch_val(
+                    "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
+                    [rp_folder, branch],
+                )
+                exchange_number = val or 0
 
         value_json = json.dumps(value) if not isinstance(value, str) else value
 

@@ -6,16 +6,12 @@ the previous exchange is auto-saved before returning context for the new turn.
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import logging
 import re
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass
 
-from rp_engine.database import PRIORITY_EXCHANGE, Database
-from rp_engine.services.analysis_pipeline import AnalysisPipeline
-from rp_engine.services.lance_store import LanceStore
+from rp_engine.database import Database
+from rp_engine.services.exchange_writer import ExchangeWriter
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +50,11 @@ class AutoSaveResult:
 class AutoSaveManager:
     """Manages automatic exchange saving when <output> tags are present."""
 
-    def __init__(self, db: Database, analysis_pipeline: AnalysisPipeline, lance_store: LanceStore | None = None) -> None:
+    def __init__(self, db: Database, exchange_writer: ExchangeWriter) -> None:
         self.db = db
-        self.analysis_pipeline = analysis_pipeline
-        self.lance_store = lance_store
+        self.exchange_writer = exchange_writer
         self._sessions: dict[str, SessionTracker] = {}
         self._active_rp: bool = False  # Off by default
-        self._bg_tasks: set[asyncio.Task] = set()
 
     def set_active(self, enabled: bool) -> None:
         """Toggle auto-save globally."""
@@ -75,6 +69,14 @@ class AutoSaveManager:
     def session_count(self) -> int:
         """Number of tracked sessions."""
         return len(self._sessions)
+
+    def cleanup_session(self, session_id: str) -> None:
+        """Remove tracker for a finished session to free memory."""
+        self._sessions.pop(session_id, None)
+
+    def clear_all(self) -> None:
+        """Remove all session trackers (used during shutdown)."""
+        self._sessions.clear()
 
     async def try_auto_save(
         self,
@@ -170,73 +172,15 @@ class AutoSaveManager:
         assistant_response: str,
     ) -> AutoSaveResult:
         """Insert exchange into DB and enqueue for analysis."""
-        now = datetime.now(UTC).isoformat()
-
-        # Idempotency key from content hash
-        content_hash = hashlib.sha256(
-            (user_message + assistant_response).encode()
-        ).hexdigest()[:16]
-
-        # Atomic exchange number assignment — avoids race with concurrent inserts
-        future = await self.db.enqueue_write(
-            """INSERT INTO exchanges (session_id, rp_folder, branch, exchange_number,
-               user_message, assistant_response, analysis_status, created_at, idempotency_key)
-               VALUES (?, ?, ?, COALESCE(
-                   (SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?), 0
-               ) + 1, ?, ?, 'pending', ?, ?)""",
-            [
-                tracker.session_id,
-                tracker.rp_folder,
-                tracker.branch,
-                tracker.rp_folder,
-                tracker.branch,
-                user_message,
-                assistant_response,
-                now,
-                content_hash,
-            ],
-            priority=PRIORITY_EXCHANGE,
+        exchange_id, exchange_number = await self.exchange_writer.save_exchange(
+            session_id=tracker.session_id,
+            rp_folder=tracker.rp_folder,
+            branch=tracker.branch,
+            user_message=user_message,
+            assistant_response=assistant_response,
         )
-        exchange_id = await future
-
-        # Retrieve the assigned exchange number
-        exchange_number = await self.db.fetch_val(
-            "SELECT exchange_number FROM exchanges WHERE id = ?",
-            [exchange_id],
-        )
-
-        # Background vector embedding (non-blocking, independent of LLM analysis)
-        if self.lance_store is not None:
-            async def _embed():
-                try:
-                    await self.lance_store.embed_exchange(
-                        exchange_number=exchange_number,
-                        user_message=user_message,
-                        assistant_response=assistant_response,
-                        rp_folder=tracker.rp_folder,
-                        branch=tracker.branch,
-                        session_id=tracker.session_id,
-                    )
-                except Exception as e:
-                    logger.warning("Auto-save embedding failed: %s", e)
-            task = asyncio.create_task(_embed())
-            self._bg_tasks.add(task)
-            task.add_done_callback(self._bg_tasks.discard)
-
-        # Enqueue for analysis
-        if self.analysis_pipeline is not None:
-            await self.analysis_pipeline.enqueue(
-                exchange_id, tracker.rp_folder, tracker.branch
-            )
 
         tracker.next_exchange_number = exchange_number + 1
-
-        logger.info(
-            "Auto-saved exchange %d (id=%d) for session %s",
-            exchange_number,
-            exchange_id,
-            tracker.session_id,
-        )
 
         return AutoSaveResult(
             exchange_id=exchange_id,

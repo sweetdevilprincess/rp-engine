@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+
+from rp_engine.models.writing import WritingFeedbackBody
 
 logger = logging.getLogger(__name__)
 
@@ -13,13 +14,6 @@ logger = logging.getLogger(__name__)
 def _get_writing_intelligence(request: Request):
     """Get writing intelligence from app state, or None if not initialized."""
     return getattr(request.app.state, "writing_intelligence", None)
-
-
-class WritingFeedbackBody(BaseModel):
-    original_output: str
-    user_feedback: str | None = None
-    user_rewrite: str | None = None
-    accepted: bool = True
 
 
 router = APIRouter(tags=["writing"])

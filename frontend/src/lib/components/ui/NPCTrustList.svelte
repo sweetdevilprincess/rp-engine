@@ -6,8 +6,10 @@
 	import { getTrustInfo } from '$lib/api/npc';
 	import { addToast } from '$lib/stores/ui';
 	import type { NPCListItem, TrustInfo } from '$lib/types';
-	import { importanceColors, trustStageColors } from '$lib/utils/colors';
+	import { importanceColors, trustStageColors, modifierColors } from '$lib/utils/colors';
+	import { ARCHETYPE_DESCRIPTIONS, MODIFIER_DESCRIPTIONS } from '$lib/constants/archetypes';
 	import Badge from './Badge.svelte';
+	import Tooltip from './Tooltip.svelte';
 	import TrustBar from './TrustBar.svelte';
 	import EmptyState from './EmptyState.svelte';
 	import InputField from './InputField.svelte';
@@ -119,7 +121,9 @@
 								<Badge color={ic.text} bg={ic.bg}>{npc.importance}</Badge>
 							{/if}
 							{#if npc.primary_archetype}
-								<Badge>{npc.primary_archetype}</Badge>
+								<Tooltip text={ARCHETYPE_DESCRIPTIONS[npc.primary_archetype] ?? npc.primary_archetype}>
+									<Badge>{npc.primary_archetype}</Badge>
+								</Tooltip>
 							{/if}
 						</div>
 
@@ -164,7 +168,10 @@
 										<span class="text-text-dim text-xs">Behavioral modifiers</span>
 										<div class="flex flex-wrap gap-1 mt-1">
 											{#each npc.behavioral_modifiers as mod}
-												<Badge>{mod}</Badge>
+												{@const mc = modifierColors(mod)}
+												<Tooltip text={MODIFIER_DESCRIPTIONS[mod] ?? mod}>
+													<Badge color={mc.text} bg={mc.bg}>{mod}</Badge>
+												</Tooltip>
 											{/each}
 										</div>
 									</div>

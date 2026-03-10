@@ -11,9 +11,10 @@ import logging
 from datetime import UTC, datetime
 
 from rp_engine.database import Database
+from rp_engine.models.session import SessionSummary
 from rp_engine.services.lance_store import LanceStore
 from rp_engine.services.llm_client import LLMClient
-from rp_engine.models.session import SessionSummary
+from rp_engine.utils.trust import fetch_thread_progress
 
 logger = logging.getLogger(__name__)
 
@@ -240,18 +241,23 @@ class SummaryBuilder:
 
     async def _get_thread_summary(self, rp_folder: str, branch: str) -> str:
         """One-line active thread summary."""
-        rows = await self.db.fetch_all(
-            """SELECT pt.name, tc.current_counter, pt.threshold
-               FROM thread_counters tc
-               JOIN plot_threads pt ON tc.thread_id = pt.id AND tc.rp_folder = pt.rp_folder
-               WHERE tc.rp_folder = ? AND tc.branch = ?""",
-            [rp_folder, branch],
-        )
+        import json as _json
+
+        rows = await fetch_thread_progress(self.db, rp_folder, branch)
         if not rows:
             return "No active threads"
-        return ", ".join(
-            f"{r['name']} ({r['current_counter']}/{r['threshold']})" for r in rows
-        )
+        parts = []
+        for r in rows:
+            counter = r["current_counter"]
+            # thresholds is a JSON object like {"gentle": 5, "moderate": 10, "strong": 15}
+            raw = r.get("thresholds")
+            if raw:
+                th = _json.loads(raw) if isinstance(raw, str) else raw
+                max_th = max(th.values()) if th else "?"
+            else:
+                max_th = "?"
+            parts.append(f"{r['name']} ({counter}/{max_th})")
+        return ", ".join(parts)
 
     async def _store_summary(
         self,

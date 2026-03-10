@@ -259,8 +259,8 @@
 			case 'npc':             return 'text-success/70';
 			case 'location':        return 'text-warning';
 			case 'secret':          return 'text-error';
-			case 'memory':          return 'text-purple-400';
-			case 'plot_thread':     return 'text-blue-400';
+			case 'memory':          return 'text-purple';
+			case 'plot_thread':     return 'text-info';
 			default:                return 'text-text-dim';
 		}
 	}
@@ -528,7 +528,7 @@
 					<button
 						onclick={runQuery}
 						disabled={queryLoading || !queryText.trim()}
-						class="bg-accent text-white text-sm font-medium py-2 px-4 rounded-md
+						class="bg-accent text-text-on-accent text-sm font-medium py-2 px-4 rounded-md
 							hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 					>
 						{queryLoading ? '...' : 'Search'}

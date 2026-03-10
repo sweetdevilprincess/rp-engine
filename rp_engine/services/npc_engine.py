@@ -22,11 +22,12 @@ from rp_engine.models.npc import (
     TrustInfo,
     TrustShift,
 )
-from rp_engine.utils.trust import trust_stage
 from rp_engine.services.graph_resolver import GraphResolver
 from rp_engine.services.llm_client import LLMClient
+from rp_engine.services.state_entry_resolver import latest_character_states_batch
 from rp_engine.services.vector_search import VectorSearch
 from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
+from rp_engine.utils.trust import fetch_trust_map, fetch_trust_pair, trust_stage
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,7 @@ class NPCEngine:
         self._scene_classifier = scene_classifier
         self.resolver = resolver
         self.lance_store = lance_store
+        self.diagnostic_logger = None  # injected by container
 
         # Framework caches (loaded on init)
         self._archetypes: dict[str, str] = {}
@@ -185,22 +187,10 @@ class NPCEngine:
         )
         dynamic = dynamic_row["role"] if dynamic_row else None
 
-        baseline_row = await self.db.fetch_one(
-            """SELECT baseline_score FROM trust_baselines
-               WHERE rp_folder = ? AND branch = ?
-                 AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                   OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-            [rp_folder, branch, npc_name, pov_character, pov_character, npc_name],
+        baseline, mod_sum = await fetch_trust_pair(
+            self.db, rp_folder, branch, npc_name, pov_character
         )
-        baseline = baseline_row["baseline_score"] if baseline_row else 0
-        mod_sum = await self.db.fetch_val(
-            """SELECT COALESCE(SUM(change), 0) FROM trust_modifications
-               WHERE rp_folder = ? AND branch = ?
-                 AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                   OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-            [rp_folder, branch, npc_name, pov_character, pov_character, npc_name],
-        )
-        trust_score = baseline + (mod_sum or 0)
+        trust_score = baseline + mod_sum
         trust_stage_name = trust_stage(trust_score)
 
         # Load recent trust history
@@ -309,7 +299,24 @@ class NPCEngine:
         )
 
         # 10. Parse response
-        return self._parse_reaction(response.content, card_name)
+        reaction = self._parse_reaction(response.content, card_name)
+
+        if self.diagnostic_logger:
+            self.diagnostic_logger.log(
+                category="npc",
+                event="npc_reaction",
+                data={
+                    "npc_name": npc_name,
+                    "rp_folder": rp_folder,
+                    "branch": branch,
+                    "trust_delta": reaction.trust_delta if reaction else 0,
+                    "emotional_state": reaction.emotional_state if reaction else None,
+                    "model": model,
+                },
+                content={"scene_prompt": scene_prompt[:500]},
+            )
+
+        return reaction
 
     async def get_batch_reactions(
         self,
@@ -382,23 +389,12 @@ class NPCEngine:
                 for r in history_rows[:10]
             ]
         else:
-            # Fallback: direct query on trust_baselines + trust_modifications
-            baseline_row = await self.db.fetch_one(
-                """SELECT baseline_score FROM trust_baselines
-                   WHERE rp_folder = ? AND branch = ?
-                     AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                       OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-                [rp_folder, branch, npc_name, target, target, npc_name],
+            # Fallback: use consolidated trust resolution
+            from rp_engine.utils.trust import resolve_trust_for_pair
+            resolution = await resolve_trust_for_pair(
+                self.db, npc_name, target, rp_folder, branch
             )
-            baseline = baseline_row["baseline_score"] if baseline_row else 0
-            mod_sum = await self.db.fetch_val(
-                """SELECT COALESCE(SUM(change), 0) FROM trust_modifications
-                   WHERE rp_folder = ? AND branch = ?
-                     AND ((LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?))
-                       OR (LOWER(character_a) = LOWER(?) AND LOWER(character_b) = LOWER(?)))""",
-                [rp_folder, branch, npc_name, target, target, npc_name],
-            )
-            score = baseline + (mod_sum or 0)
+            score = resolution.live_score
 
         return TrustInfo(
             npc_name=npc_name,
@@ -425,53 +421,23 @@ class NPCEngine:
 
         # Batch-fetch runtime state for all cards in this rp_folder/branch
         card_ids = [card["id"] for card in card_rows if card.get("id")]
-        runtime_map: dict[str, dict] = {}  # card_id -> latest state row
-        if card_ids:
-            # Use subquery to get latest exchange_number per card_id
-            runtime_rows = await self.db.fetch_all(
-                """SELECT cse.card_id, cse.location, cse.emotional_state
-                   FROM character_state_entries cse
-                   INNER JOIN (
-                       SELECT card_id, MAX(exchange_number) as max_ex
-                       FROM character_state_entries
-                       WHERE rp_folder = ? AND branch = ?
-                       GROUP BY card_id
-                   ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
-                   WHERE cse.rp_folder = ? AND cse.branch = ?""",
-                [rp_folder, branch, rp_folder, branch],
-            )
-            for row in runtime_rows:
-                runtime_map[row["card_id"]] = row
+        runtime_map = await latest_character_states_batch(
+            self.db, rp_folder, branch, card_ids
+        ) if card_ids else {}
 
         # Batch-fetch trust baselines and modification sums
         pov_lower = pov_character.lower()
-        baseline_rows = await self.db.fetch_all(
-            """SELECT LOWER(character_a) as ca, LOWER(character_b) as cb, baseline_score
-               FROM trust_baselines WHERE rp_folder = ? AND branch = ?""",
-            [rp_folder, branch],
-        )
-        baseline_map: dict[str, int] = {}  # lowercase npc name -> baseline
-        for row in baseline_rows:
-            ca, cb = row["ca"], row["cb"]
+        trust_pairs = await fetch_trust_map(self.db, rp_folder, branch)
+        # Flatten into per-NPC maps relative to POV character
+        baseline_map: dict[str, int] = {}
+        mod_map: dict[str, int] = {}
+        for (ca, cb), (baseline, mod_sum) in trust_pairs.items():
             if ca == pov_lower:
-                baseline_map[cb] = row["baseline_score"]
+                baseline_map[cb] = baseline_map.get(cb, 0) + baseline
+                mod_map[cb] = mod_map.get(cb, 0) + mod_sum
             elif cb == pov_lower:
-                baseline_map[ca] = row["baseline_score"]
-
-        mod_rows = await self.db.fetch_all(
-            """SELECT LOWER(character_a) as ca, LOWER(character_b) as cb,
-                      COALESCE(SUM(change), 0) as total
-               FROM trust_modifications WHERE rp_folder = ? AND branch = ?
-               GROUP BY LOWER(character_a), LOWER(character_b)""",
-            [rp_folder, branch],
-        )
-        mod_map: dict[str, int] = {}  # lowercase npc name -> mod sum
-        for row in mod_rows:
-            ca, cb = row["ca"], row["cb"]
-            if ca == pov_lower:
-                mod_map[cb] = mod_map.get(cb, 0) + row["total"]
-            elif cb == pov_lower:
-                mod_map[ca] = mod_map.get(ca, 0) + row["total"]
+                baseline_map[ca] = baseline_map.get(ca, 0) + baseline
+                mod_map[ca] = mod_map.get(ca, 0) + mod_sum
 
         results: list[NPCListItem] = []
         for card in card_rows:

@@ -2,6 +2,7 @@
 
 Uses watchfiles to watch Story Cards/**/*.md and RP State/Story_Guidelines.md.
 Debounces 500ms to handle Obsidian's atomic save (write temp + rename).
+Supervised loop auto-restarts on crash with exponential backoff (1s → 60s).
 """
 
 from __future__ import annotations
@@ -13,6 +14,10 @@ from pathlib import Path
 from rp_engine.services.card_indexer import CardIndexer
 
 logger = logging.getLogger(__name__)
+
+_BACKOFF_BASE = 1.0      # seconds
+_BACKOFF_MAX = 60.0       # seconds
+_BACKOFF_MULTIPLIER = 2.0
 
 
 class FileWatcher:
@@ -31,11 +36,13 @@ class FileWatcher:
         self.debounce_ms = debounce_ms
         self._task: asyncio.Task | None = None
         self._running = False
+        self.diagnostic_logger = None  # injected by container
+        self._restart_count = 0
 
     def start(self) -> None:
-        """Start the file watcher as a background task."""
+        """Start the file watcher as a supervised background task."""
         self._running = True
-        self._task = asyncio.create_task(self._watch_loop())
+        self._task = asyncio.create_task(self._supervised_watch_loop())
         logger.info("File watcher started for %d RP folders", len(self.rp_folders))
 
     async def stop(self) -> None:
@@ -47,7 +54,37 @@ class FileWatcher:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("File watcher stopped")
+        logger.info("File watcher stopped (restarts: %d)", self._restart_count)
+
+    async def _supervised_watch_loop(self) -> None:
+        """Supervise the watch loop with exponential backoff on crash."""
+        backoff = _BACKOFF_BASE
+        while self._running:
+            try:
+                await self._watch_loop()
+                # _watch_loop returned normally (e.g. no dirs to watch) — don't restart
+                break
+            except asyncio.CancelledError:
+                raise  # propagate cancellation
+            except Exception:
+                self._restart_count += 1
+                logger.exception(
+                    "File watcher crashed (restart #%d, backoff %.1fs)",
+                    self._restart_count, backoff,
+                )
+                if self.diagnostic_logger:
+                    self.diagnostic_logger.log(
+                        category="file_watcher",
+                        event="crash_restart",
+                        data={
+                            "restart_count": self._restart_count,
+                            "backoff_seconds": backoff,
+                        },
+                    )
+                if not self._running:
+                    break
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * _BACKOFF_MULTIPLIER, _BACKOFF_MAX)
 
     def _get_watch_paths(self) -> list[Path]:
         """Get all directories to watch."""

@@ -104,6 +104,18 @@ TOOLS = [
                     "type": "string",
                     "description": "The assistant's previous RP response (optional, improves context).",
                 },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID for trust cap tracking.",
+                },
+                "include_npc_reactions": {
+                    "type": "boolean",
+                    "description": "Include inline NPC reactions in context response.",
+                },
+                "skip_guidelines": {
+                    "type": "boolean",
+                    "description": "Omit guidelines from the response (use when guidelines are already in the system prompt).",
+                },
                 "rp_folder": {"type": "string", "description": "RP folder name."},
                 "branch": {"type": "string", "description": "Branch name (default: main)."},
             },
@@ -294,6 +306,10 @@ TOOLS = [
                     "type": "integer",
                     "description": "Maximum results to return (default: 15).",
                 },
+                "skip_guidelines": {
+                    "type": "boolean",
+                    "description": "Omit guidelines from the response (use when guidelines are already in the system prompt).",
+                },
                 "rp_folder": {"type": "string", "description": "RP folder name."},
                 "branch": {"type": "string", "description": "Branch name (default: main)."},
             },
@@ -379,6 +395,36 @@ TOOLS = [
         },
     ),
     Tool(
+        name="list_sessions",
+        description=(
+            "List RP sessions, optionally filtered by rp_folder. Returns session "
+            "IDs, start/end times, and status (active or ended)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "rp_folder": {"type": "string", "description": "Filter by RP folder name."},
+                "branch": {"type": "string", "description": "Filter by branch name."},
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="create_session",
+        description=(
+            "Start a new RP session. Returns the session ID needed for "
+            "save_exchange and end_session calls."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "rp_folder": {"type": "string", "description": "RP folder name."},
+                "branch": {"type": "string", "description": "Branch name (default: main)."},
+            },
+            "required": ["rp_folder"],
+        },
+    ),
+    Tool(
         name="create_card",
         description=(
             "Create a new story card. Writes the .md file and indexes it. Use after "
@@ -421,6 +467,12 @@ async def handle_get_scene_context(args: dict) -> list[TextContent]:
     if args.get("last_response"):
         body["last_response"] = args["last_response"]
     params = _rp_params(args)
+    if args.get("session_id"):
+        params["session_id"] = args["session_id"]
+    if args.get("include_npc_reactions") is not None:
+        params["include_npc_reactions"] = str(args["include_npc_reactions"]).lower()
+    if args.get("skip_guidelines"):
+        params["skip_guidelines"] = "true"
     data = await api_post("/api/context", json_body=body, params=params)
     return _json_result(data)
 
@@ -566,6 +618,28 @@ async def handle_end_session(args: dict) -> list[TextContent]:
     return _json_result(data)
 
 
+async def handle_list_sessions(args: dict) -> list[TextContent]:
+    """GET /api/sessions -- list RP sessions."""
+    params = {}
+    rp_folder = args.get("rp_folder") or os.environ.get("RP_FOLDER", "")
+    if rp_folder:
+        params["rp_folder"] = rp_folder
+    if args.get("branch"):
+        params["branch"] = args["branch"]
+    data = await api_get("/api/sessions", params=params)
+    return _json_result(data)
+
+
+async def handle_create_session(args: dict) -> list[TextContent]:
+    """POST /api/sessions -- start a new RP session."""
+    body: dict = {
+        "rp_folder": args["rp_folder"],
+        "branch": args.get("branch", "main"),
+    }
+    data = await api_post("/api/sessions", json_body=body)
+    return _json_result(data)
+
+
 async def handle_create_card(args: dict) -> list[TextContent]:
     """POST /api/cards/{card_type} -- create a new story card."""
     card_type = args["card_type"]
@@ -587,8 +661,9 @@ async def handle_create_card(args: dict) -> list[TextContent]:
 # MCP server wiring
 # ---------------------------------------------------------------------------
 
-# Handler dispatch table
-from typing import Callable
+# Handler dispatch table — import at module scope after all handler defs
+from collections.abc import Callable  # noqa: E402
+
 _HANDLERS: dict[str, Callable] = {
     "get_scene_context": handle_get_scene_context,
     "save_exchange": handle_save_exchange,
@@ -603,6 +678,8 @@ _HANDLERS: dict[str, Callable] = {
     "suggest_card": handle_suggest_card,
     "list_existing_cards": handle_list_existing_cards,
     "end_session": handle_end_session,
+    "list_sessions": handle_list_sessions,
+    "create_session": handle_create_session,
     "create_card": handle_create_card,
 }
 

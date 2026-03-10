@@ -5,6 +5,7 @@
 	import { getGuidelines } from '$lib/api/context';
 	import { listCards } from '$lib/api/cards';
 	import { listThreads } from '$lib/api/threads';
+	import { exportRP } from '$lib/api/rp';
 	import type { GuidelinesResponse, StoryCardSummary, ThreadDetail } from '$lib/types';
 	import { CARD_TYPES } from '$lib/types/enums';
 	import Badge from '$lib/components/ui/Badge.svelte';
@@ -17,6 +18,7 @@
 	import InfoRow from '$lib/components/ui/InfoRow.svelte';
 	import CardSection from '$lib/components/ui/CardSection.svelte';
 	import BackButton from '$lib/components/ui/BackButton.svelte';
+	import Btn from '$lib/components/ui/Btn.svelte';
 
 	// ── Data ─────────────────────────────────────────────────
 	let guidelines = $state<GuidelinesResponse | null>(null);
@@ -105,6 +107,28 @@
 	let activeThreads   = $derived(threads.filter(t => t.status === 'active'));
 	let dormantThreads  = $derived(threads.filter(t => t.status === 'dormant'));
 	let resolvedThreads = $derived(threads.filter(t => t.status === 'resolved'));
+
+	let exporting = $state(false);
+	let includeOptional = $state(true);
+
+	async function handleExport() {
+		if (!$activeRP) return;
+		exporting = true;
+		try {
+			const blob = await exportRP($activeRP.rp_folder, { include_optional: includeOptional });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${$activeRP.rp_folder}_export.zip`;
+			a.click();
+			URL.revokeObjectURL(url);
+			addToast('Export downloaded', 'success');
+		} catch (e: any) {
+			addToast(e.message ?? 'Export failed', 'error');
+		} finally {
+			exporting = false;
+		}
+	}
 </script>
 
 <div class="flex gap-4">
@@ -207,6 +231,19 @@
 					{/each}
 				</div>
 			{/if}
+		</CardSection>
+
+		<!-- Export -->
+		<CardSection title="Export" compact>
+			<div class="px-4 py-3 space-y-3">
+				<label class="flex items-center gap-2 text-sm text-text-dim cursor-pointer">
+					<input type="checkbox" bind:checked={includeOptional} class="accent-[var(--color-accent)]" />
+					Include optional data
+				</label>
+				<Btn onclick={handleExport} disabled={exporting} class="w-full">
+					{exporting ? 'Exporting...' : 'Export RP'}
+				</Btn>
+			</div>
 		</CardSection>
 	</aside>
 

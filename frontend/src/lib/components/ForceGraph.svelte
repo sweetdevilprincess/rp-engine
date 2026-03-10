@@ -14,6 +14,31 @@
 	let container: HTMLDivElement;
 	let graph: any = null;
 
+	function hexToRgb(hex: string): string {
+		const h = hex.replace('#', '');
+		return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)].join(',');
+	}
+
+	/** Read theme colors live from CSS variables (reacts to theme changes) */
+	function getThemeColor(prop: string, fallback: string): string {
+		if (typeof document === 'undefined') return fallback;
+		return getComputedStyle(document.documentElement).getPropertyValue(prop).trim() || fallback;
+	}
+
+	function getBorderColor(): string {
+		const hex = getThemeColor('--color-text', '#38322b');
+		return `rgba(${hexToRgb(hex)}, 0.15)`;
+	}
+
+	function getLabelColor(): string {
+		const hex = getThemeColor('--color-text', '#38322b');
+		return `rgba(${hexToRgb(hex)}, 0.85)`;
+	}
+
+	function getEdgeFallbackColor(): string {
+		return getThemeColor('--color-text-muted', '#b0a698');
+	}
+
 	interface ForceNode {
 		id: string;
 		card_type: string;
@@ -104,7 +129,7 @@
 		for (const [key, color] of Object.entries(EDGE_TYPE_COLORS)) {
 			if (type.includes(key)) return color;
 		}
-		return '#b0a698';
+		return getEdgeFallbackColor();
 	}
 
 	function getNodeRadius(node: ForceNode): number {
@@ -164,7 +189,7 @@
 				ctx.shadowBlur = 0;
 
 				// Border
-				ctx.strokeStyle = 'rgba(56,50,43,0.15)';
+				ctx.strokeStyle = getBorderColor();
 				ctx.lineWidth = 0.5;
 				ctx.stroke();
 
@@ -173,7 +198,7 @@
 					ctx.font = `${Math.max(10 / globalScale, 2)}px sans-serif`;
 					ctx.textAlign = 'center';
 					ctx.textBaseline = 'top';
-					ctx.fillStyle = 'rgba(56,50,43,0.85)';
+					ctx.fillStyle = getLabelColor();
 					ctx.fillText(node.id, node.x!, node.y! + r + 2);
 				}
 			})
@@ -223,9 +248,11 @@
 		}, 1500);
 	}
 
-	// Update graph data when filter or data changes
+	let initialized = false;
+
+	// Update graph data when filter or data changes (skip initial — initGraph handles it)
 	$effect(() => {
-		if (graph && data) {
+		if (graph && data && initialized) {
 			const gd = buildGraphData(data, filter);
 			graph.graphData(gd);
 			setTimeout(() => {
@@ -234,8 +261,9 @@
 		}
 	});
 
-	onMount(() => {
-		initGraph();
+	onMount(async () => {
+		await initGraph();
+		initialized = true;
 	});
 
 	onDestroy(() => {

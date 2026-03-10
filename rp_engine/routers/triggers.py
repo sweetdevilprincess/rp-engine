@@ -18,6 +18,7 @@ from rp_engine.models.trigger import (
     TriggerTestResult,
     TriggerUpdate,
 )
+from rp_engine.utils.json_helpers import safe_parse_json_array
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +27,7 @@ router = APIRouter(prefix="/api/triggers", tags=["triggers"])
 
 def _row_to_response(row: dict) -> TriggerResponse:
     """Convert DB row to TriggerResponse."""
-    conditions = []
-    if row.get("conditions"):
-        try:
-            conditions = json.loads(row["conditions"]) if isinstance(row["conditions"], str) else row["conditions"]
-        except (json.JSONDecodeError, TypeError):
-            conditions = []
+    conditions = safe_parse_json_array(row.get("conditions"))
 
     return TriggerResponse(
         id=row["id"],

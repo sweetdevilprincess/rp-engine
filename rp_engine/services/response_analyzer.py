@@ -12,6 +12,7 @@ import logging
 from rp_engine.database import Database
 from rp_engine.models.analysis import AnalysisLLMResult
 from rp_engine.services.llm_client import LLMClient
+from rp_engine.utils.lru_cache import LRUCache
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class ResponseAnalyzer:
 
     def __init__(self, db: Database, llm: LLMClient) -> None:
         self.db = db
-        self._alias_cache: dict[str, dict[str, str]] = {}  # rp_folder -> alias map
+        self._alias_cache: LRUCache[str, dict[str, str]] = LRUCache(maxsize=16)
         self.llm = llm
 
     async def analyze(
@@ -38,6 +39,7 @@ class ResponseAnalyzer:
         assistant_response: str,
         rp_folder: str,
         branch: str = "main",
+        custom_schemas: list[dict] | None = None,
     ) -> AnalysisLLMResult:
         """Run LLM analysis on an exchange and return structured results."""
         # Load recent exchanges for context
@@ -54,7 +56,7 @@ class ResponseAnalyzer:
         alias_map = await self._build_alias_map(rp_folder)
 
         # Build prompt
-        prompt = self._build_prompt(recent)
+        prompt = self._build_prompt(recent, custom_schemas=custom_schemas)
 
         # Call LLM
         try:
@@ -66,6 +68,8 @@ class ResponseAnalyzer:
                 response_format={"type": "json_object"},
             )
             result = self._parse_response(response.content, alias_map)
+            result._raw_response = response.content
+            result._model_used = self.llm.models.response_analysis
             return result
         except Exception as e:
             logger.error("Analysis LLM call failed for exchange %d: %s", exchange_id, e)
@@ -76,8 +80,9 @@ class ResponseAnalyzer:
 
         Cached per rp_folder; invalidated via invalidate_alias_cache().
         """
-        if rp_folder in self._alias_cache:
-            return self._alias_cache[rp_folder]
+        cached = self._alias_cache.get(rp_folder)
+        if cached is not None:
+            return cached
         rows = await self.db.fetch_all(
             """SELECT ea.alias, sc.name
                FROM entity_aliases ea
@@ -88,7 +93,7 @@ class ResponseAnalyzer:
         mapping: dict[str, str] = {}
         for row in rows:
             mapping[row["alias"].lower()] = row["name"]
-        self._alias_cache[rp_folder] = mapping
+        self._alias_cache.put(rp_folder, mapping)
         return mapping
 
     def invalidate_alias_cache(self, rp_folder: str | None = None) -> None:
@@ -98,7 +103,7 @@ class ResponseAnalyzer:
         else:
             self._alias_cache.clear()
 
-    def _build_prompt(self, exchanges: list[dict]) -> str:
+    def _build_prompt(self, exchanges: list[dict], custom_schemas: list[dict] | None = None) -> str:
         """Build the analysis prompt — ported verbatim from response-analyzer.js."""
         conversation_parts: list[str] = []
         for i, ex in enumerate(exchanges, 1):
@@ -172,7 +177,7 @@ Analyze the following {len(exchanges)} exchanges and identify:
    - Suggested card types: secret, memory, knowledge, lore
    - In-story timestamp if present in the exchanges
 
-Conversation:
+{"" if not custom_schemas else self._build_custom_state_prompt_section(custom_schemas)}Conversation:
 {conversation_text}
 
 Respond ONLY with valid JSON in this exact format:
@@ -276,10 +281,41 @@ Respond ONLY with valid JSON in this exact format:
     "suggestedCardTypes": [],
     "inStoryTimestamp": "string or null",
     "characters": ["who was involved"]
-  }}
+  }},
+  "customStateChanges": [
+    {{
+      "schemaName": "string (must match a tracked schema name)",
+      "entity": "string (character name or empty for scene-level)",
+      "action": "set|add|remove|subtract",
+      "value": "the new/changed value"
+    }}
+  ]
 }}
 
 IMPORTANT: Only include items that are CLEARLY present in the conversation. If a category has no entries, use an empty array/object. Do not infer or speculate beyond what's explicitly in the text. For storyState.characters, only include characters who actually appeared in the exchanges."""
+
+    @staticmethod
+    def _build_custom_state_prompt_section(custom_schemas: list[dict]) -> str:
+        """Build the custom state extraction section for the analysis prompt."""
+        schema_lines = []
+        for s in custom_schemas:
+            entity_note = f" (per {s['belongs_to']})" if s.get("belongs_to") else " (scene-level)"
+            schema_lines.append(f"- {s['name']} ({s['data_type']}){entity_note}: {s.get('description', '')}")
+
+        return f"""
+9. CUSTOM STATE CHANGES:
+   The following custom state fields are being tracked. If the narrative indicates any changed, include them:
+   {chr(10).join('   ' + line for line in schema_lines)}
+
+   Actions by data type:
+   - number: "set" (absolute), "add" (increase), "subtract" (decrease)
+   - text: "set"
+   - list: "add" (append item), "remove" (remove item), "set" (replace entire list)
+   - object: "set"
+
+   ONLY include changes that are CLEARLY stated in the narrative. Do not infer.
+
+"""
 
     def _parse_response(
         self, content: str, alias_map: dict[str, str]
@@ -339,6 +375,12 @@ IMPORTANT: Only include items that are CLEARLY present in the conversation. If a
                 self._resolve_name(c, alias_map) for c in sig.get("characters", [])
                 if self._resolve_name(c, alias_map) is not None
             ]
+
+        # Resolve custom state change entity names
+        for csc in data.get("customStateChanges", []):
+            if csc.get("entity"):
+                resolved = self._resolve_name(csc["entity"], alias_map)
+                csc["entity"] = resolved or csc["entity"]
 
         return data
 

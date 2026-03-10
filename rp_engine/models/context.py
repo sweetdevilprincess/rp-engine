@@ -18,13 +18,14 @@ class ContextRequest(BaseModel):
     user_message: str
     last_response: str | None = None
     include_npc_reactions: bool = True
+    pov_character: str | None = None
 
 
 class ContextDocument(BaseModel):
     name: str
     card_type: str
     file_path: str
-    source: Literal["keyword", "semantic", "graph", "trigger", "always_load"]
+    source: Literal["keyword", "semantic", "graph", "trigger", "always_load", "attached"]
     relevance_score: float
     content: str | None = None
     summary: str | None = None
@@ -69,6 +70,14 @@ class CharacterState(BaseModel):
     location: str | None = None
     conditions: list[str] = []
     emotional_state: str | None = None
+
+
+class CustomStateBlock(BaseModel):
+    schema_name: str
+    category: str
+    display_format: str  # inject_as: "stat_block", "inventory_list", "note"
+    content: str
+    belongs_to: str | None = None  # character name or None (scene-level)
 
 
 class ThreadAlert(BaseModel):
@@ -148,6 +157,7 @@ class ContextResponse(BaseModel):
     card_gaps: list[CardGap] = []
     past_exchanges: list[PastExchangeHit] = []
     extracted_memories: list[ExtractedMemoryHit] = []
+    custom_state: list[CustomStateBlock] = []
     warnings: list[StalenessWarning] = []
     writing_constraints: WritingConstraints | None = None
     auto_saved: AutoSaveResult | None = None

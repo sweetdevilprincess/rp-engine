@@ -45,7 +45,11 @@
 			if (!stored) return;
 			const prefs = JSON.parse(stored);
 			const root = document.documentElement;
-			if (prefs.accentColor) root.style.setProperty('--color-accent', prefs.accentColor);
+			if (prefs.theme && prefs.theme !== 'sage') {
+				root.dataset.theme = prefs.theme;
+			} else {
+				root.removeAttribute('data-theme');
+			}
 			const fontSizes: Record<string, string> = { small: '13px', medium: '14px', large: '16px' };
 			if (prefs.fontSize && fontSizes[prefs.fontSize]) root.style.setProperty('font-size', fontSizes[prefs.fontSize]);
 		} catch {}

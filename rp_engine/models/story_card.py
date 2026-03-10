@@ -36,6 +36,7 @@ class StoryCardDetail(BaseModel):
     importance: str | None = None
     frontmatter: dict[str, Any]
     content: str
+    body: str = ""
     connections: list[EntityConnection] = []
 
 
@@ -118,3 +119,37 @@ class GapEvidenceResponse(BaseModel):
     total_mentions: int
     primary_mentions: int
     scenes: list[SceneEvidence]
+
+
+class GenerateCardNameRequest(BaseModel):
+    card_type: str
+    hints: str = ""
+    count: int = 5
+
+
+class GenerateCardNameResponse(BaseModel):
+    suggestions: list[str]
+    card_type: str
+
+
+class CardValidateRequest(BaseModel):
+    card_type: str
+    frontmatter: dict[str, Any]
+
+
+class DeleteCardResponse(BaseModel):
+    name: str
+    card_type: str
+    file_deleted: bool
+
+
+class RelationshipSyncEntry(BaseModel):
+    card_name: str
+    card_type: str
+    relationship_added: dict[str, Any]
+
+
+class RelationshipSyncResult(BaseModel):
+    source_card: str
+    updated_cards: list[RelationshipSyncEntry] = []
+    errors: list[str] = []

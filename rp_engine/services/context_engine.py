@@ -22,6 +22,7 @@ from rp_engine.models.context import (
     ContextReference,
     ContextRequest,
     ContextResponse,
+    CustomStateBlock,
     ExtractedMemoryHit,
     FlaggedNPC,
     NPCBrief,
@@ -32,17 +33,24 @@ from rp_engine.models.context import (
     TriggeredNote,
     WritingConstraints,
 )
+from rp_engine.models.custom_state import CustomStateSchema
 from rp_engine.models.rp import GuidelinesResponse
 from rp_engine.services.entity_extractor import EntityExtractor
 from rp_engine.services.graph_resolver import GraphResolver
 from rp_engine.services.guidelines_service import GuidelinesService
 from rp_engine.services.npc_brief_builder import NPCBriefBuilder
 from rp_engine.services.scene_classifier import SceneClassifier
+from rp_engine.services.state_entry_resolver import (
+    latest_character_states_batch,
+    latest_exchange,
+    latest_exchange_number,
+    latest_scene_state,
+)
 from rp_engine.services.trigger_evaluator import TriggerEvaluator
 from rp_engine.services.vector_search import VectorSearch
 from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
 from rp_engine.utils.text import hash_content as _hash_content
-from rp_engine.utils.trust import TRUST_STAGES, trust_stage
+from rp_engine.utils.trust import fetch_trust_map
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,7 @@ class ContextEngine:
         npc_brief_builder: NPCBriefBuilder | None = None,
         npc_engine: Any | None = None,
         lance_store: Any | None = None,
+        custom_state_manager: Any | None = None,
     ) -> None:
         self.db = db
         self.entity_extractor = entity_extractor
@@ -80,8 +89,10 @@ class ContextEngine:
         self.npc_brief_builder = npc_brief_builder or NPCBriefBuilder()
         self.npc_engine = npc_engine
         self.lance_store = lance_store
+        self.custom_state_manager = custom_state_manager
         self.branch_manager = None
         self.writing_intelligence = None
+        self.diagnostic_logger = None  # injected by container
 
     def configure(self, **kwargs: Any) -> None:
         """Set late-bound dependencies (avoids monkey-patching attributes)."""
@@ -151,6 +162,15 @@ class ContextEngine:
                 [n.name for n in extraction.active_npcs],
             ),
         )
+
+        # ---- Stage 2.5a: Custom State Retrieval ----
+        custom_state_blocks: list[CustomStateBlock] = []
+        if self.config.include_custom_state and self.custom_state_manager:
+            from rp_engine.config import get_config
+            pov = request.pov_character or get_config().rp.default_pov_character
+            custom_state_blocks = await self._get_all_custom_state(
+                rp_folder, branch, pov
+            )
 
         # ---- Stage 2.5: Trigger Evaluation (no LLM) ----
         fired_triggers = await self.trigger_evaluator.evaluate_all(
@@ -306,46 +326,17 @@ class ContextEngine:
                 card_map[row["id"]] = row
 
             # Batch runtime state (latest per card_id)
-            runtime_rows = await self.db.fetch_all(
-                f"""SELECT cse.card_id, cse.emotional_state, cse.conditions
-                    FROM character_state_entries cse
-                    INNER JOIN (
-                        SELECT card_id, MAX(exchange_number) as max_ex
-                        FROM character_state_entries
-                        WHERE rp_folder = ? AND branch = ? AND card_id IN ({placeholders})
-                        GROUP BY card_id
-                    ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
-                    WHERE cse.rp_folder = ? AND cse.branch = ?""",
-                [rp_folder, branch] + npc_ids + [rp_folder, branch],
+            batch_states = await latest_character_states_batch(
+                self.db, rp_folder, branch, npc_ids
             )
-            for row in runtime_rows:
-                runtime_map[row["card_id"]] = row
+            runtime_map = batch_states
 
             # Batch trust: baselines + modification sums
             npc_names_lower = {npc.name.lower() for npc in all_npcs.values()}
-            baseline_rows = await self.db.fetch_all(
-                """SELECT LOWER(character_a) as ca, LOWER(character_b) as cb, baseline_score
-                   FROM trust_baselines WHERE rp_folder = ? AND branch = ?""",
-                [rp_folder, branch],
-            )
-            for row in baseline_rows:
-                ca, cb = row["ca"], row["cb"]
-                pair = (ca, cb)
+            trust_pairs = await fetch_trust_map(self.db, rp_folder, branch)
+            for (ca, cb), (baseline, mod_sum) in trust_pairs.items():
                 if ca in npc_names_lower or cb in npc_names_lower:
-                    trust_map[pair] = trust_map.get(pair, 0) + row["baseline_score"]
-
-            mod_rows = await self.db.fetch_all(
-                """SELECT LOWER(character_a) as ca, LOWER(character_b) as cb,
-                          COALESCE(SUM(change), 0) as total
-                   FROM trust_modifications WHERE rp_folder = ? AND branch = ?
-                   GROUP BY LOWER(character_a), LOWER(character_b)""",
-                [rp_folder, branch],
-            )
-            for row in mod_rows:
-                ca, cb = row["ca"], row["cb"]
-                pair = (ca, cb)
-                if ca in npc_names_lower or cb in npc_names_lower:
-                    trust_map[pair] = trust_map.get(pair, 0) + row["total"]
+                    trust_map[(ca, cb)] = baseline + mod_sum
 
         active_npc_ids = {n.entity_id for n in extraction.active_npcs}
 
@@ -402,6 +393,26 @@ class ContextEngine:
         # ---- Stage 5: Assembly ----
         warnings = await self._get_warnings(rp_folder, branch)
 
+        if self.diagnostic_logger:
+            self.diagnostic_logger.log(
+                category="context",
+                event="context_resolved",
+                data={
+                    "rp_folder": rp_folder,
+                    "branch": branch,
+                    "current_exchange": current_turn,
+                    "documents_count": len(documents),
+                    "npc_briefs_count": len(npc_briefs),
+                    "npc_reactions_count": len(npc_reactions),
+                    "past_exchanges_count": len(past_exchanges),
+                    "extracted_memories_count": len(extracted_memories),
+                    "thread_alerts_count": len(thread_alerts),
+                    "card_gaps_count": len(card_gaps),
+                    "has_guidelines": guidelines is not None,
+                    "warnings_count": len(warnings),
+                },
+            )
+
         return ContextResponse(
             current_exchange=current_turn,
             documents=documents,
@@ -412,6 +423,7 @@ class ContextEngine:
             guidelines=guidelines,
             scene_state=scene_state,
             character_states=char_states,
+            custom_state=custom_state_blocks,
             thread_alerts=thread_alerts,
             triggered_notes=triggered_notes,
             card_gaps=card_gaps,
@@ -423,12 +435,7 @@ class ContextEngine:
 
     async def get_continuity_brief(self, rp_folder: str, branch: str) -> dict:
         """Data-only continuity brief: scene, characters, recent exchanges, threads."""
-        scene = await self.db.fetch_one(
-            """SELECT location, time_of_day, mood, in_story_timestamp
-               FROM scene_state_entries WHERE rp_folder = ? AND branch = ?
-               ORDER BY exchange_number DESC LIMIT 1""",
-            [rp_folder, branch],
-        )
+        scene = await latest_scene_state(self.db, rp_folder, branch)
 
         characters = await self.db.fetch_all(
             """SELECT sc.name,
@@ -596,12 +603,7 @@ class ContextEngine:
 
     async def _get_last_response(self, rp_folder: str, branch: str) -> str | None:
         """Get the most recent assistant response from exchanges."""
-        row = await self.db.fetch_one(
-            """SELECT assistant_response FROM exchanges
-               WHERE rp_folder = ? AND branch = ?
-               ORDER BY exchange_number DESC LIMIT 1""",
-            [rp_folder, branch],
-        )
+        row = await latest_exchange(self.db, rp_folder, branch)
         if row:
             return row["assistant_response"]
 
@@ -616,10 +618,7 @@ class ContextEngine:
 
     async def _get_current_exchange(self, rp_folder: str, branch: str) -> int:
         """Get the current exchange number."""
-        val = await self.db.fetch_val(
-            "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, branch],
-        )
+        val = await latest_exchange_number(self.db, rp_folder, branch)
         if val:
             return val
 
@@ -654,12 +653,7 @@ class ContextEngine:
 
     async def _get_scene_state(self, rp_folder: str, branch: str) -> SceneState:
         """Load current scene context from CoW scene_state_entries."""
-        row = await self.db.fetch_one(
-            """SELECT location, time_of_day, mood, in_story_timestamp
-               FROM scene_state_entries WHERE rp_folder = ? AND branch = ?
-               ORDER BY exchange_number DESC LIMIT 1""",
-            [rp_folder, branch],
-        )
+        row = await latest_scene_state(self.db, rp_folder, branch)
         if row:
             return SceneState(**{k: row[k] for k in ["location", "time_of_day", "mood", "in_story_timestamp"]})
         return SceneState()
@@ -680,22 +674,11 @@ class ContextEngine:
             return {}
 
         card_ids = [lr["card_id"] for lr in ledger_rows]
-        placeholders = ",".join("?" for _ in card_ids)
 
         # Batch fetch latest runtime state per card_id
-        runtime_rows = await self.db.fetch_all(
-            f"""SELECT cse.card_id, cse.location, cse.conditions, cse.emotional_state
-                FROM character_state_entries cse
-                INNER JOIN (
-                    SELECT card_id, MAX(exchange_number) as max_ex
-                    FROM character_state_entries
-                    WHERE rp_folder = ? AND branch = ? AND card_id IN ({placeholders})
-                    GROUP BY card_id
-                ) latest ON cse.card_id = latest.card_id AND cse.exchange_number = latest.max_ex
-                WHERE cse.rp_folder = ? AND cse.branch = ?""",
-            [rp_folder, branch] + card_ids + [rp_folder, branch],
+        runtime_map = await latest_character_states_batch(
+            self.db, rp_folder, branch, card_ids
         )
-        runtime_map = {row["card_id"]: row for row in runtime_rows}
 
         states: dict[str, CharacterState] = {}
         for lr in ledger_rows:
@@ -740,6 +723,14 @@ class ContextEngine:
             logger.warning("Writing intelligence failed", exc_info=True)
             return None
 
+    def _get_rp_pacing(self, rp_folder: str) -> str:
+        """Get the scene_pacing setting for an RP, defaulting to 'moderate'."""
+        if self.guidelines_service:
+            guidelines = self.guidelines_service.get_guidelines(rp_folder)
+            if guidelines and guidelines.scene_pacing:
+                return guidelines.scene_pacing
+        return "moderate"
+
     async def _get_thread_alerts(
         self, rp_folder: str, branch: str
     ) -> list[ThreadAlert]:
@@ -765,7 +756,10 @@ class ContextEngine:
 
             thresholds = safe_parse_json(thresholds_raw)
             if not thresholds:
-                continue
+                # Fall back to pacing-based defaults
+                pacing = self._get_rp_pacing(rp_folder)
+                presets = self.config.pacing_presets
+                thresholds = getattr(presets, pacing, presets.moderate).copy()
 
             consequences = safe_parse_json(consequences_raw)
 
@@ -836,6 +830,51 @@ class ContextEngine:
             [rp_folder],
         )
 
+    async def _get_all_custom_state(
+        self, rp_folder: str, branch: str, pc_name: str | None = None
+    ) -> list[CustomStateBlock]:
+        """Retrieve all custom state (scene + PC) in a single snapshot call."""
+        if not self.custom_state_manager:
+            return []
+
+        snapshot = await self.custom_state_manager.get_snapshot(rp_folder, branch)
+        if not snapshot.schemas:
+            return []
+
+        # Build value lookup: (schema_id, entity_id) → value
+        value_map = {(v.schema_id, v.entity_id or ""): v.value for v in snapshot.values}
+
+        blocks: list[CustomStateBlock] = []
+        for schema in sorted(snapshot.schemas, key=lambda s: s.display_order):
+            if schema.inject_as == "hidden":
+                continue
+
+            if schema.belongs_to == "character":
+                # PC custom state — look up by pc_name entity_id
+                if not pc_name:
+                    continue
+                value = value_map.get((schema.id, pc_name))
+                owner = pc_name
+            else:
+                # Scene-level custom state
+                value = value_map.get((schema.id, ""))
+                owner = None
+
+            if value is None:
+                continue
+
+            content = _format_custom_state_value(schema, value)
+            if content:
+                blocks.append(CustomStateBlock(
+                    schema_name=schema.name,
+                    category=schema.category,
+                    display_format=schema.inject_as,
+                    content=content,
+                    belongs_to=owner,
+                ))
+
+        return blocks
+
     async def _get_warnings(
         self, rp_folder: str, branch: str
     ) -> list[StalenessWarning]:
@@ -855,4 +894,27 @@ class ContextEngine:
             )
             for r in rows
         ]
+
+
+def _format_custom_state_value(schema: CustomStateSchema, value) -> str | None:
+    """Format a custom state value based on inject_as type."""
+    if value is None:
+        return None
+
+    if schema.inject_as == "stat_block":
+        if isinstance(value, dict):
+            return " | ".join(f"{k}: {v}" for k, v in value.items())
+        return f"{schema.name}: {value}"
+
+    elif schema.inject_as == "inventory_list":
+        if isinstance(value, list):
+            if not value:
+                return None
+            return "\n".join(f"- {item}" for item in value)
+        return str(value)
+
+    elif schema.inject_as == "note":
+        return str(value) if value else None
+
+    return None
 

@@ -12,11 +12,16 @@ import logging
 from datetime import UTC, datetime
 
 from rp_engine.database import Database
+from rp_engine.models.session import Recap
 from rp_engine.services.lance_store import LanceStore
 from rp_engine.services.llm_client import LLMClient
+from rp_engine.services.state_entry_resolver import (
+    latest_exchange_number,
+    latest_scene_state,
+)
 from rp_engine.services.state_manager import StateManager
 from rp_engine.services.thread_tracker import ThreadTracker
-from rp_engine.models.session import Recap
+from rp_engine.utils.trust import fetch_thread_progress
 
 logger = logging.getLogger(__name__)
 
@@ -150,17 +155,14 @@ class RecapBuilder:
 
     async def _compute_state_hash(self, rp_folder: str, branch: str) -> str:
         """Hash current state for cache invalidation."""
-        latest_exchange = await self.db.fetch_val(
-            "SELECT MAX(exchange_number) FROM exchanges WHERE rp_folder = ? AND branch = ?",
-            [rp_folder, branch],
-        )
+        latest_ex = await latest_exchange_number(self.db, rp_folder, branch)
         latest_trust = await self.db.fetch_val(
             """SELECT MAX(tm.created_at) FROM trust_modifications tm
                JOIN exchanges ex ON tm.exchange_id = ex.id
                WHERE ex.rp_folder = ? AND ex.branch = ?""",
             [rp_folder, branch],
         )
-        raw = f"{rp_folder}:{branch}:{latest_exchange}:{latest_trust}"
+        raw = f"{rp_folder}:{branch}:{latest_ex}:{latest_trust}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     async def _get_cached_recap(
@@ -189,56 +191,55 @@ class RecapBuilder:
         parts: list[str] = []
 
         # Scene state
-        scene = await self.db.fetch_one(
-            """SELECT location, time_of_day, mood, in_story_timestamp
-               FROM scene_state_entries
-               WHERE rp_folder = ? AND branch = ?
-               ORDER BY exchange_number DESC LIMIT 1""",
-            [rp_folder, branch],
-        )
+        scene = await latest_scene_state(self.db, rp_folder, branch)
         if scene:
             loc = scene.get("location") or "unknown"
             tod = scene.get("time_of_day") or ""
             mood = scene.get("mood") or ""
             parts.append(f"Location: {loc}, Time: {tod}, Mood: {mood}")
 
-        # Character states
-        char_rows = await self.db.fetch_all(
-            """SELECT character_name, location, emotional_state, conditions
-               FROM character_state_entries
-               WHERE rp_folder = ? AND branch = ?
-               AND exchange_number = (
-                   SELECT MAX(exchange_number) FROM character_state_entries
-                   WHERE rp_folder = ? AND branch = ? AND character_name = character_state_entries.character_name
-               )""",
-            [rp_folder, branch, rp_folder, branch],
+        # Character states — join card_id → name via story_cards
+        ledger_rows = await self.db.fetch_all(
+            """SELECT cl.card_id, sc.name
+               FROM character_ledger cl
+               JOIN story_cards sc ON cl.card_id = sc.id
+               WHERE cl.rp_folder = ? AND cl.branch = ? AND cl.status = 'active'""",
+            [rp_folder, branch],
         )
-        for row in char_rows:
-            info = [row["character_name"]]
-            if row.get("location"):
-                info.append(f"at {row['location']}")
-            if row.get("emotional_state"):
-                info.append(f"feeling {row['emotional_state']}")
-            if row.get("conditions"):
-                info.append(f"conditions: {row['conditions']}")
-            parts.append(" | ".join(info))
+        if ledger_rows:
+            from rp_engine.services.state_entry_resolver import (
+                latest_character_states_batch,
+            )
+            card_ids = [lr["card_id"] for lr in ledger_rows]
+            state_map = await latest_character_states_batch(self.db, rp_folder, branch, card_ids)
+            name_map = {lr["card_id"]: lr["name"] for lr in ledger_rows}
+            for cid, state in state_map.items():
+                name = name_map.get(cid, cid)
+                info = [name]
+                if state.get("location"):
+                    info.append(f"at {state['location']}")
+                if state.get("emotional_state"):
+                    info.append(f"feeling {state['emotional_state']}")
+                if state.get("conditions"):
+                    info.append(f"conditions: {state['conditions']}")
+                parts.append(" | ".join(info))
 
         return "\n".join(parts) if parts else "No state recorded yet."
 
     async def _get_thread_summary(self, rp_folder: str, branch: str) -> str:
         """Active thread summary."""
-        rows = await self.db.fetch_all(
-            """SELECT pt.name, tc.current_counter, pt.threshold, pt.consequences
-               FROM thread_counters tc
-               JOIN plot_threads pt ON tc.thread_id = pt.id AND tc.rp_folder = pt.rp_folder
-               WHERE tc.rp_folder = ? AND tc.branch = ?""",
-            [rp_folder, branch],
-        )
+        rows = await fetch_thread_progress(self.db, rp_folder, branch)
         if not rows:
             return "No active threads."
         parts = []
         for r in rows:
-            line = f"- {r['name']}: {r['current_counter']}/{r['threshold']}"
+            raw = r.get("thresholds")
+            if raw:
+                th = json.loads(raw) if isinstance(raw, str) else raw
+                max_th = max(th.values()) if th else "?"
+            else:
+                max_th = "?"
+            line = f"- {r['name']}: {r['current_counter']}/{max_th}"
             if r.get("consequences"):
                 line += f" (consequence: {r['consequences']})"
             parts.append(line)

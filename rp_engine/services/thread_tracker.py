@@ -14,6 +14,7 @@ from rp_engine.database import PRIORITY_ANALYSIS, Database
 from rp_engine.models.analysis import ThreadDetail, ThreadEvidence
 from rp_engine.models.context import ThreadAlert
 from rp_engine.utils.json_helpers import safe_parse_json, safe_parse_json_list
+from rp_engine.utils.text import snippet_around_keyword
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class ThreadTracker:
             # Record evidence
             chunk_text = None
             if mentioned and matched_term:
-                chunk_text = self._extract_snippet(response_text, matched_term)
+                chunk_text = snippet_around_keyword(response_text, matched_term, window=100)
             await self._record_evidence(
                 thread_id, rp_folder, branch, exchange_number,
                 matched_term, chunk_text, prev_counter, new_counter, direction, now,
@@ -402,22 +403,6 @@ class ThreadTracker:
             priority=PRIORITY_ANALYSIS,
         )
 
-    @staticmethod
-    def _extract_snippet(text: str, keyword: str, context_chars: int = 100) -> str:
-        """Extract a text snippet around the matched keyword."""
-        lower = text.lower()
-        kw_lower = keyword.lower()
-        idx = lower.find(kw_lower)
-        if idx == -1:
-            return text[:200]
-        start = max(0, idx - context_chars)
-        end = min(len(text), idx + len(keyword) + context_chars)
-        snippet = text[start:end]
-        if start > 0:
-            snippet = "..." + snippet
-        if end < len(text):
-            snippet = snippet + "..."
-        return snippet
 
     async def set_counter(
         self,

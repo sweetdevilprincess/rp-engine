@@ -16,7 +16,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from rp_engine.dependencies import (
     get_auto_save_manager,
     get_context_engine,
-    get_db,
     get_graph_resolver,
     get_guidelines_service,
     get_prompt_assembler,
@@ -24,15 +23,17 @@ from rp_engine.dependencies import (
 )
 from rp_engine.models.context import (
     AutoSaveResult as AutoSaveResultModel,
+)
+from rp_engine.models.context import (
     ContextRequest,
     ContextResponse,
     ResolveRequest,
 )
+from rp_engine.models.rp import GuidelinesResponse
 from rp_engine.services.auto_save import AutoSaveManager
 from rp_engine.services.context_engine import ContextEngine
 from rp_engine.services.guidelines_service import GuidelinesService
 from rp_engine.services.prompt_assembler import PromptAssembler
-from rp_engine.models.rp import GuidelinesResponse
 from rp_engine.utils.frontmatter import parse_file, serialize_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ async def get_context(
     rp_folder: str = Query(...),
     branch: str = Query("main"),
     session_id: str = Query(None),
+    skip_guidelines: bool = Query(False),
     context_engine: ContextEngine = Depends(get_context_engine),
     auto_save: AutoSaveManager | None = Depends(get_auto_save_manager),
 ):
@@ -70,6 +72,9 @@ async def get_context(
 
     if auto_saved is not None:
         resp.auto_saved = auto_saved
+
+    if skip_guidelines:
+        resp.guidelines = None
 
     return resp
 
@@ -156,12 +161,18 @@ async def update_guidelines(
     if frontmatter is None:
         raise HTTPException(422, detail="Could not parse guidelines frontmatter")
 
+    # Extract body separately (not a frontmatter field)
+    new_body = body.pop("body", None)
+    if new_body is not None:
+        file_body = new_body
+
     # Merge updated fields into existing frontmatter
     allowed_fields = {
         "pov_mode", "pov_character", "dual_characters", "narrative_voice",
         "tense", "tone", "scene_pacing", "response_length",
         "integrate_user_narrative", "preserve_user_details",
         "sensitive_themes", "hard_limits",
+        "include_writing_principles", "include_npc_framework", "include_output_format",
     }
     for key, value in body.items():
         if key in allowed_fields:
@@ -189,6 +200,10 @@ async def update_guidelines(
         sensitive_themes=frontmatter.get("sensitive_themes", []),
         hard_limits=frontmatter.get("hard_limits"),
         response_length=frontmatter.get("response_length"),
+        include_writing_principles=frontmatter.get("include_writing_principles", True),
+        include_npc_framework=frontmatter.get("include_npc_framework", True),
+        include_output_format=frontmatter.get("include_output_format", True),
+        body=file_body.strip() if file_body and file_body.strip() else None,
     )
     return resp
 

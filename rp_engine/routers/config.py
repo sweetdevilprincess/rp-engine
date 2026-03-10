@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
+import time
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from rp_engine.config import PROJECT_ROOT, RPEngineConfig, get_config
-from rp_engine.dependencies import get_auto_save_manager
+from rp_engine.dependencies import get_auto_save_manager, get_llm_client
 from rp_engine.services.auto_save import AutoSaveManager
+from rp_engine.services.llm._client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class ConfigResponse(BaseModel):
     context: dict
     search: dict
     trust: dict
+    diagnostics: dict
     rp: dict
 
 
@@ -50,6 +52,7 @@ class ConfigUpdate(BaseModel):
     search: dict | None = None
     chat: dict | None = None
     trust: dict | None = None
+    diagnostics: dict | None = None
     rp: dict | None = None
     # Secret fields — written to .env only, never to config.yaml
     openrouter_api_key: str | None = None
@@ -68,6 +71,7 @@ def _config_to_dict(cfg: RPEngineConfig) -> dict:
         "context": cfg.context.model_dump(),
         "search": cfg.search.model_dump(),
         "trust": cfg.trust.model_dump(),
+        "diagnostics": cfg.diagnostics.model_dump(),
         "rp": cfg.rp.model_dump(),
     }
 
@@ -118,12 +122,15 @@ async def get_config_endpoint():
 
 
 @router.put("")
-async def update_config(body: ConfigUpdate):
+async def update_config(
+    body: ConfigUpdate,
+    llm: LLMClient = Depends(get_llm_client),
+):
     """Update app configuration.
 
     Non-secret values are written to config.yaml.
     API keys are written to .env only.
-    Server restart may be required for some changes (host, port).
+    LLM provider changes are hot-reloaded without server restart.
     """
     try:
         yaml_data = _read_config_yaml()
@@ -137,6 +144,7 @@ async def update_config(body: ConfigUpdate):
             "context": body.context,
             "search": body.search,
             "trust": body.trust,
+            "diagnostics": body.diagnostics,
             "rp": body.rp,
         }
         for section, updates in section_map.items():
@@ -149,24 +157,32 @@ async def update_config(body: ConfigUpdate):
 
         _write_config_yaml(yaml_data)
 
-        # Write secrets to .env
+        # Write secrets to .env and update the running process env
         if body.openrouter_api_key is not None:
             _update_env_key("OPENROUTER_API_KEY", body.openrouter_api_key)
+            os.environ["OPENROUTER_API_KEY"] = body.openrouter_api_key
 
         # Invalidate the cached config so next read picks up new values
         get_config.cache_clear()
 
-        return {"ok": True, "message": "Config updated. Server restart may be required for some changes."}
+        # Hot-reload LLM providers when relevant config changed
+        msg = "Config updated."
+        if body.llm is not None or body.openrouter_api_key is not None:
+            fresh_config = get_config()
+            await llm.reload_providers(fresh_config)
+            msg += " LLM providers reloaded."
+
+        return {"ok": True, "message": msg}
 
     except yaml.YAMLError as e:
-        raise HTTPException(422, detail=f"Invalid YAML in config: {e}")
+        raise HTTPException(422, detail=f"Invalid YAML in config: {e}") from None
     except PermissionError as e:
-        raise HTTPException(403, detail=f"Permission denied: {e}")
+        raise HTTPException(403, detail=f"Permission denied: {e}") from None
     except FileNotFoundError as e:
-        raise HTTPException(404, detail=f"Config file not found: {e}")
+        raise HTTPException(404, detail=f"Config file not found: {e}") from None
     except Exception as e:
         logger.error("Config update failed: %s", e)
-        raise HTTPException(500, detail=f"Config update failed: {e}")
+        raise HTTPException(500, detail=f"Config update failed: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -200,3 +216,53 @@ async def set_active_rp(
         active_rp=auto_save.is_active(),
         session_count=auto_save.session_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Provider test
+# ---------------------------------------------------------------------------
+
+
+class ProviderTestResult(BaseModel):
+    provider: str
+    status: str  # "ok" | "error"
+    latency_ms: float | None = None
+    error: str | None = None
+
+
+@router.get("/test-provider", response_model=ProviderTestResult)
+async def test_provider(
+    provider: str = "openrouter",
+    llm: LLMClient = Depends(get_llm_client),
+):
+    """Test connectivity to a configured LLM provider."""
+    prov = llm._providers.get(provider)
+    if prov is None:
+        return ProviderTestResult(
+            provider=provider,
+            status="error",
+            error=f"Provider '{provider}' not configured. Available: {list(llm._providers.keys())}",
+        )
+
+    start = time.perf_counter()
+    try:
+        await prov.generate(
+            messages=[{"role": "user", "content": "ping"}],
+            model=llm.fallback_model,
+            max_tokens=1,
+            temperature=0.0,
+        )
+        latency = (time.perf_counter() - start) * 1000
+        return ProviderTestResult(
+            provider=provider,
+            status="ok",
+            latency_ms=round(latency, 1),
+        )
+    except Exception as e:
+        latency = (time.perf_counter() - start) * 1000
+        return ProviderTestResult(
+            provider=provider,
+            status="error",
+            latency_ms=round(latency, 1),
+            error=str(e),
+        )
